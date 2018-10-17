@@ -1,0 +1,16 @@
+#ifndef _INOTIFYTOOLS_FANOTIFY_H
+#define _INOTIFYTOOLS_FANOTIFY_H 1
+
+/* this is defined to 1 if <sys/fanotify.h> works. */
+#undef SYS_FANOTIFY_H_EXISTS_AND_WORKS
+
+
+#ifdef SYS_FANOTIFY_H_EXISTS_AND_WORKS
+#include <sys/fanotify.h>
+#else
+#include "fanotify-nosys.h"
+#endif // SYS_FANOTIFY_H_EXISTS_AND_WORKS
+
+
+#endif
+

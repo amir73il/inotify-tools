@@ -25,14 +25,17 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <time.h>
 #include <regex.h>
 #include <setjmp.h>
+#include <fcntl.h>
 
 #include "inotifytools/inotify.h"
+#include "inotifytools/fanotify.h"
 
 /**
  * @file inotifytools/inotifytools.h
@@ -145,6 +148,7 @@ static unsigned  num_total;
 static int collect_stats = 0;
 
 struct rbtree *tree_wd = 0;
+struct rbtree *tree_fid = 0;
 struct rbtree *tree_filename = 0;
 static int error = 0;
 static int init = 0;
@@ -249,6 +253,17 @@ int wd_compare(const void *d1, const void *d2, const void *config) {
 	return ((watch*)d1)->wd - ((watch*)d2)->wd;
 }
 
+int fid_compare(const void *d1, const void *d2, const void *config) {
+	if (!d1 || !d2) return d1 - d2;
+	watch *w1 = (watch*)d1;
+	watch *w2 = (watch*)d2;
+	int n1, n2;
+	n1 = w1->fid->handle_bytes;
+	n2 = w2->fid->handle_bytes;
+	if (n1 != n2) return n1 - n2;
+	return memcmp(w1->fid, w2->fid, sizeof(*(w1->fid)) + n1);
+}
+
 int filename_compare(const void *d1, const void *d2, const void *config) {
 	if (!d1 || !d2) return d1 - d2;
 	return strcmp(((watch*)d1)->filename, ((watch*)d2)->filename);
@@ -261,6 +276,15 @@ watch *watch_from_wd( int wd ) {
 	watch w;
 	w.wd = wd;
 	return (watch*)rbfind(&w, tree_wd);
+}
+
+/**
+ * @internal
+ */
+watch *watch_from_fid( struct fanotify_event_fid *fid ) {
+	watch w;
+	w.fid = fid;
+	return (watch*)rbfind(&w, tree_fid);
 }
 
 /**
@@ -295,6 +319,7 @@ int inotifytools_initialize() {
 	collect_stats = 0;
 	init = 1;
 	tree_wd = rbinit(wd_compare, 0);
+	tree_fid = rbinit(fid_compare, 0);
 	tree_filename = rbinit(filename_compare, 0);
 	timefmt = 0;
 
@@ -306,6 +331,7 @@ int inotifytools_initialize() {
  */
 void destroy_watch(watch *w) {
 	if (w->filename) free(w->filename);
+	if (w->fid) free(w->fid);
 	free(w);
 }
 
@@ -343,6 +369,7 @@ void inotifytools_cleanup() {
 
 	rbwalk(tree_wd, cleanup_tree, 0);
 	rbdestroy(tree_wd); tree_wd = 0;
+	rbdestroy(tree_fid); tree_fid = 0;
 	rbdestroy(tree_filename); tree_filename = 0;
 }
 
@@ -887,13 +914,16 @@ int remove_inotify_watch(watch *w) {
 /**
  * @internal
  */
-watch *create_watch(int wd, char *filename) {
+watch *create_watch(int wd, struct fanotify_event_fid *fid, char *filename) {
 	if ( wd <= 0 || !filename) return 0;
 
 	watch *w = (watch*)calloc(1, sizeof(watch));
-	w->wd = wd;
+	w->wd = wd ?: (unsigned long)fid;
+	w->fid = fid;
 	w->filename = strdup(filename);
 	rbsearch(w, tree_wd);
+	if (fid)
+		rbsearch(w, tree_fid);
 	rbsearch(w, tree_filename);
     return NULL;
 }
@@ -917,6 +947,8 @@ int inotifytools_remove_watch_by_wd( int wd ) {
 
 	if (!remove_inotify_watch(w)) return 0;
 	rbdelete(w, tree_wd);
+	if (w->fid)
+		rbdelete(w, tree_fid);
 	rbdelete(w, tree_filename);
 	destroy_watch(w);
 	return 1;
@@ -940,6 +972,8 @@ int inotifytools_remove_watch_by_filename( char const * filename ) {
 
 	if (!remove_inotify_watch(w)) return 0;
 	rbdelete(w, tree_wd);
+	if (w->fid)
+		rbdelete(w, tree_fid);
 	rbdelete(w, tree_filename);
 	destroy_watch(w);
 	return 1;
@@ -999,6 +1033,35 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			} // else
 		} // if ( wd < 0 )
 
+		struct fanotify_event_fid *fid = NULL;
+		if (!wd) {
+			fid = calloc(1, sizeof(*fid) + MAX_FID_LEN);
+			if (!fid) {
+				fprintf( stderr, "Failed to allocate fid" );
+				return 0;
+			}
+
+			struct statfs buf;
+			if (statfs(filenames[i], &buf)) {
+				free(fid);
+				fprintf(stderr, "Statfs failed on %s: %s\n",
+					filenames[i], strerror(errno));
+				return 0;
+			}
+			memcpy(&fid->fsid, &buf.f_fsid, sizeof(fid->fsid));
+
+			int ret, mntid;
+			fid->handle_bytes = MAX_FID_LEN;
+			ret = name_to_handle_at(AT_FDCWD, filenames[i],
+						(void *)&fid->handle_bytes,
+						&mntid, 0);
+			if (ret || fid->handle_bytes > MAX_FID_LEN) {
+				free(fid);
+				fprintf(stderr, "Failed to encode fid on %s: %s\n",
+					filenames[i], strerror(errno));
+				return 0;
+			}
+		}
 		char *filename;
 		// Always end filename with / if it is a directory
 		if ( !isdir(filenames[i])
@@ -1008,7 +1071,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 		else {
 			nasprintf( &filename, "%s/", filenames[i] );
 		}
-		create_watch(wd, filename);
+		create_watch(wd, fid, filename);
 		free(filename);
 	} // for
 
@@ -2066,7 +2129,7 @@ int event_compare(const void *p1, const void *p2, const void *config)
 {
 	if (!p1 || !p2) return p1 - p2;
 	char asc = 1;
-	int sort_event = (int)config;
+	int sort_event = (int)(unsigned long)config;
 	if (sort_event == -1) {
 		sort_event = 0;
 		asc = 0;
