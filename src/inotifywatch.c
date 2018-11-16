@@ -32,7 +32,7 @@ extern int optind, opterr, optopt;
 bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
                 int *verbose, int *zero, int *sort, int *recursive,
                 char **fromfile, char **exc_regex, char **exc_iregex,
-                char **inc_regex, char **inc_iregex);
+                char **inc_regex, char **inc_iregex, bool *global);
 
 void print_help();
 
@@ -74,6 +74,7 @@ int main(int argc, char **argv) {
     int verbose = 0;
     zero = 0;
     int recursive = 0;
+    bool global = false;
     char *fromfile = 0;
     sort = -1;
     done = false;
@@ -87,7 +88,7 @@ int main(int argc, char **argv) {
     // Parse commandline options, aborting if something goes wrong
     if (!parse_opts(&argc, &argv, &events, &timeout, &verbose, &zero, &sort,
                     &recursive, &fromfile, &exc_regex, &exc_iregex, &inc_regex,
-                    &inc_iregex)) {
+                    &inc_iregex, &global)) {
         return EXIT_FAILURE;
     }
 
@@ -110,7 +111,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_initialize()) {
+    if (!inotifytools_init(global)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -119,6 +120,10 @@ int main(int argc, char **argv) {
     // If events is still 0, make it all events.
     if (!events)
         events = IN_ALL_EVENTS;
+
+    // fanotify doesn't support IN_DELETE_SELF event
+    if (global)
+	    events &= ~IN_DELETE_SELF;
 
     FileList list = construct_path_list(argc, argv, fromfile);
 
@@ -132,6 +137,15 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Establishing watches...\n");
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
+        if (global) {
+		if (!inotifytools_watch_files(list.watch_files, events, 1)) {
+			fprintf(stderr, "Couldn't add global watch(es)"
+				     " %s...: %s\n", this_file,
+				     strerror(inotifytools_error()));
+			return EXIT_FAILURE;
+		}
+		break;
+	}
         if (recursive && verbose) {
             fprintf(stderr, "Setting up watch(es) on %s\n", this_file);
         }
@@ -187,7 +201,7 @@ int main(int argc, char **argv) {
     char *moved_from = 0;
 
     do {
-        event = inotifytools_next_event(BLOCKING_TIMEOUT);
+        event = inotifytools_next_events(BLOCKING_TIMEOUT, 1, global);
         if (!event) {
             if (!inotifytools_error()) {
                 return EXIT_TIMEOUT;
@@ -198,6 +212,10 @@ int main(int argc, char **argv) {
                 continue;
             }
         }
+
+	// TODO: index files from unknown watches
+	if (global)
+		continue;
 
         // if we last had MOVED_FROM and don't currently have MOVED_TO,
         // moved_from file must have been moved outside of tree - so unwatch it.
@@ -210,7 +228,7 @@ int main(int argc, char **argv) {
             moved_from = 0;
         }
 
-        if (recursive) {
+	if (recursive) {
             if ((event->mask & IN_CREATE) ||
                 (!moved_from && (event->mask & IN_MOVED_TO))) {
                 // New file - if it is a directory, watch it
@@ -365,7 +383,7 @@ int print_info() {
 bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
                 int *verbose, int *zero, int *sort, int *recursive,
                 char **fromfile, char **exc_regex, char **exc_iregex,
-                char **inc_regex, char **inc_iregex) {
+                char **inc_regex, char **inc_iregex, bool *global) {
     assert(argc);
     assert(argv);
     assert(events);
@@ -374,6 +392,7 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
     assert(zero);
     assert(sort);
     assert(recursive);
+    assert(global);
     assert(fromfile);
     assert(exc_regex);
     assert(exc_iregex);
@@ -385,7 +404,7 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
     bool sort_set = false;
 
     // Short options
-    static const char opt_string[] = "hra:d:zve:t:";
+    static const char opt_string[] = "hrga:d:zve:t:";
 
     // Construct array
     static const struct option long_opts[] = {
@@ -397,6 +416,7 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
         {"ascending", required_argument, NULL, 'a'},
         {"descending", required_argument, NULL, 'd'},
         {"recursive", no_argument, NULL, 'r'},
+        {"global", no_argument, NULL, 'g'},
         {"fromfile", required_argument, NULL, 'o'},
         {"exclude", required_argument, NULL, 'c'},
         {"excludei", required_argument, NULL, 'b'},
@@ -426,6 +446,11 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
         // --recursive or -r
         case 'r':
             ++(*recursive);
+            break;
+
+	// --global or -g
+        case 'g':
+            (*global) = true;
             break;
 
         // --zero or -z
@@ -603,6 +628,7 @@ void print_help() {
            "\t\tif they consist only of zeros (the default is to not output\n"
            "\t\tthese rows and columns).\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t-t|--timeout <seconds>\n"
            "\t\tListen only for specified amount of time in seconds; if\n"
            "\t\tomitted or negative, inotifywatch will execute until receiving "
