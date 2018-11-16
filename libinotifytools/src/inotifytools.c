@@ -1187,7 +1187,7 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 
 	if ( num_events < 1 ) return NULL;
 
-	static struct inotify_event event[MAX_EVENTS];
+	static struct inotify_event event[2*MAX_EVENTS]; // second half for fanotify->inotify conversion
 	static struct inotify_event * ret;
 	static int first_byte = 0;
 	static ssize_t bytes;
@@ -1299,13 +1299,33 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 		                "events occurred at once.\n");
 		return NULL;
 	}
+	// convert fanotify events to inotify events
+	if ( fanotify ) {
+		struct fanotify_event_metadata *meta = (void *)&event[0];
+		struct fanotify_event_info *info = FAN_EVENT_INFO(meta);
+		struct fanotify_event_fid *fid;
+		if (info && info->info_type == FAN_EVENT_INFO_TYPE_FID) {
+			fid = (void *)info->info;
+		} else {
+			fprintf(stderr, "No fid in fanotify event.\n");
+			return NULL;
+		}
+		watch *w = watch_from_fid(fid);
+		if (!w) {
+			fprintf(stderr, "Ignoring fanotify event on unwatched object.\n");
+			longjmp(jmp,0);
+		}
+		ret = &event[MAX_EVENTS];
+		ret->wd = w->wd;
+		ret->mask = (uint32_t)meta->mask;
+		ret->len = 0;
+
+		RETURN(ret);
+	}
+
 	bytes += this_bytes;
 
 	ret = &event[0];
-	// TODO: get fanotify events
-	if ( fanotify )
-		return ret;
-
 	first_byte = sizeof(struct inotify_event) + ret->len;
 	niceassert( first_byte <= bytes, "ridiculously long filename, things will "
 	                                 "almost certainly screw up." );
