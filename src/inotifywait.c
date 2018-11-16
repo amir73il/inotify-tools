@@ -358,10 +358,6 @@ int main(int argc, char **argv) {
             }
         }
 
-	// TODO: index files from unknown watches
-	if (global)
-		continue;
-
         if (quiet < 2 && (event->mask & orig_events)) {
             if (csv) {
                 output_event_csv(event);
@@ -371,6 +367,10 @@ int main(int argc, char **argv) {
                 inotifytools_printf(event, "%w %,e %f\n");
             }
         }
+
+	// TODO: index files from unknown watches
+	if (global)
+		continue;
 
         // if we last had MOVED_FROM and don't currently have MOVED_TO,
         // moved_from file must have been moved outside of tree - so unwatch it.
