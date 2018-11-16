@@ -36,7 +36,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 long int *timeout, int *recursive, bool *csv, bool *daemon,
                 bool *syslog, char **format, char **timefmt, char **fromfile,
                 char **outfile, char **exc_regex, char **exc_iregex,
-                char **inc_regex, char **inc_iregex);
+                char **inc_regex, char **inc_iregex, bool *global);
 
 void print_help();
 
@@ -136,6 +136,7 @@ int main(int argc, char **argv) {
     bool csv = false;
     bool dodaemon = false;
     bool syslog = false;
+    bool global = false;
     char *format = NULL;
     char *timefmt = NULL;
     char *fromfile = NULL;
@@ -148,13 +149,13 @@ int main(int argc, char **argv) {
 
     // Parse commandline options, aborting if something goes wrong
     if (!parse_opts(&argc, &argv, &events, &monitor, &quiet, &timeout,
-                    &recursive, &csv, &dodaemon, &syslog, &format, &timefmt,
-                    &fromfile, &outfile, &exc_regex, &exc_iregex, &inc_regex,
-                    &inc_iregex)) {
+		    &recursive, &csv, &dodaemon, &syslog, &format, &timefmt,
+		    &fromfile, &outfile, &exc_regex, &exc_iregex, &inc_regex,
+		    &inc_iregex, &global)) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_initialize()) {
+    if (!inotifytools_init(global)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -189,6 +190,9 @@ int main(int argc, char **argv) {
     orig_events = events;
     if (monitor && recursive) {
         events = events | IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM;
+    }
+    if (global) {
+	    events |= IN_ISDIR;
     }
 
     FileList list = construct_path_list(argc, argv, fromfile);
@@ -284,7 +288,9 @@ int main(int argc, char **argv) {
     }
 
     if (!quiet) {
-        if (recursive) {
+        if (global) {
+            output_error(syslog, "Setting up global filesystem watches.\n");
+	} else if (recursive) {
             output_error(syslog, "Setting up watches.  Beware: since -r "
                                  "was given, this may take a while!\n");
         } else {
@@ -295,7 +301,16 @@ int main(int argc, char **argv) {
     // now watch files
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
-        if ((recursive &&
+        if (global) {
+		if (!inotifytools_watch_files(list.watch_files, events, 1)) {
+			output_error(syslog, "Couldn't add global watch(es)"
+				     " %s...: %s\n", this_file,
+				     strerror(inotifytools_error()));
+			return EXIT_FAILURE;
+		}
+		break;
+	}
+	if ((recursive &&
              !inotifytools_watch_recursively_with_exclude(
                  this_file, events, list.exclude_files)) ||
             (!recursive && !inotifytools_watch_file(this_file, events))) {
@@ -325,7 +340,7 @@ int main(int argc, char **argv) {
     char *moved_from = 0;
 
     do {
-        event = inotifytools_next_event(timeout);
+        event = inotifytools_next_events(timeout, 1, global);
         if (!event) {
             if (!inotifytools_error()) {
                 return EXIT_TIMEOUT;
@@ -334,6 +349,10 @@ int main(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
         }
+
+	// TODO: index files from unknown watches
+	if (global)
+		continue;
 
         if (quiet < 2 && (event->mask & orig_events)) {
             if (csv) {
@@ -356,7 +375,7 @@ int main(int argc, char **argv) {
             moved_from = 0;
         }
 
-        if (monitor && recursive) {
+	if (monitor && recursive) {
             if ((event->mask & IN_CREATE) ||
                 (!moved_from && (event->mask & IN_MOVED_TO))) {
                 // New file - if it is a directory, watch it
@@ -414,7 +433,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 long int *timeout, int *recursive, bool *csv, bool *daemon,
                 bool *syslog, char **format, char **timefmt, char **fromfile,
                 char **outfile, char **exc_regex, char **exc_iregex,
-                char **inc_regex, char **inc_iregex) {
+                char **inc_regex, char **inc_iregex, bool *global) {
     assert(argc);
     assert(argv);
     assert(events);
@@ -424,6 +443,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
     assert(csv);
     assert(daemon);
     assert(syslog);
+    assert(global);
     assert(format);
     assert(timefmt);
     assert(fromfile);
@@ -449,7 +469,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
     static char *newlineformat;
 
     // Short options
-    static const char opt_string[] = "mrhcdsqt:fo:e:";
+    static const char opt_string[] = "mrghcdsqt:fo:e:";
 
     // Long options
     static const struct option long_opts[] = {
@@ -462,6 +482,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         {"recursive", no_argument, NULL, 'r'},
         {"csv", no_argument, NULL, 'c'},
         {"daemon", no_argument, NULL, 'd'},
+        {"global", no_argument, NULL, 'g'},
         {"syslog", no_argument, NULL, 's'},
         {"format", required_argument, NULL, 'n'},
         {"timefmt", required_argument, NULL, 'i'},
@@ -517,6 +538,11 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         // --syslog or -s
         case 's':
             (*syslog) = true;
+            break;
+
+        // --global or -g
+        case 'g':
+            (*global) = true;
             break;
 
         // --filename or -f
@@ -694,6 +720,7 @@ void print_help() {
         "\t              \tlogging events to a file specified by --outfile.\n"
         "\t              \tImplies --syslog.\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t--fromfile <file>\n"
            "\t              \tRead files to watch from <file> or `-' for "
            "stdin.\n");

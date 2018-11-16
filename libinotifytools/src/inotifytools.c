@@ -298,6 +298,7 @@ watch *watch_from_filename( char const *filename ) {
 
 /**
  * Initialise inotify.
+ * With @glabal is non-zero, initialize fanotify filesystem watch.
  *
  * You must call this function before using any function which adds or removes
  * watches or attempts to access any information about watches.
@@ -305,12 +306,15 @@ watch *watch_from_filename( char const *filename ) {
  * @return 1 on success, 0 on failure.  On failure, the error can be
  *         obtained from inotifytools_error().
  */
-int inotifytools_initialize() {
+int inotifytools_init(int fanotify) {
 	if (init) return 1;
 
 	error = 0;
-	// Try to initialise inotify
-	inotify_fd = inotify_init();
+	// Try to initialise inotify/fanotify
+	if (fanotify)
+		inotify_fd = fanotify_init(FAN_REPORT_FID, 0);
+	else
+		inotify_fd = inotify_init();
 	if (inotify_fd < 0)	{
 		error = errno;
 		return 0;
@@ -324,6 +328,11 @@ int inotifytools_initialize() {
 	timefmt = 0;
 
 	return 1;
+}
+
+int inotifytools_initialize()
+{
+	inotifytools_init(0);
 }
 
 /**
@@ -901,6 +910,9 @@ void inotifytools_replace_filename( char const * oldname,
  */
 int remove_inotify_watch(watch *w) {
 	error = 0;
+	// There is no kernel object representing the watch with fanotify
+	if (w->fid)
+		return 0;
 	int status = inotify_rm_watch( inotify_fd, w->wd );
 	if ( status < 0 ) {
 		fprintf(stderr, "Failed to remove watch on %s: %s\n", w->filename,
@@ -915,7 +927,7 @@ int remove_inotify_watch(watch *w) {
  * @internal
  */
 watch *create_watch(int wd, struct fanotify_event_fid *fid, char *filename) {
-	if ( wd <= 0 || !filename) return 0;
+	if ( wd < 0 || !filename) return 0;
 
 	watch *w = (watch*)calloc(1, sizeof(watch));
 	w->wd = wd ?: (unsigned long)fid;
@@ -994,7 +1006,7 @@ int inotifytools_watch_file( char const * filename, int events ) {
 	static char const * filenames[2];
 	filenames[0] = filename;
 	filenames[1] = NULL;
-	return inotifytools_watch_files( filenames, events );
+	return inotifytools_watch_files( filenames, events, 0 );
 }
 
 /**
@@ -1012,14 +1024,25 @@ int inotifytools_watch_file( char const * filename, int events ) {
  * @return 1 on success, 0 on failure.  On failure, the error can be
  *         obtained from inotifytools_error().
  */
-int inotifytools_watch_files( char const * filenames[], int events ) {
+int inotifytools_watch_files( char const * filenames[], int events,
+			      int fanotify ) {
 	niceassert( init, "inotifytools_initialize not called yet" );
 	error = 0;
 
 	static int i;
 	for ( i = 0; filenames[i]; ++i ) {
-		static int wd;
-		wd = inotify_add_watch( inotify_fd, filenames[i], events );
+		int wd;
+		if ( fanotify ) {
+			/*
+			 * This does not change anything if filesystem mark is
+			 * already set.
+			 */
+			wd = fanotify_mark( inotify_fd,
+					    FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+					    events, AT_FDCWD, filenames[i] );
+		} else {
+			wd = inotify_add_watch( inotify_fd, filenames[i], events );
+		}
 		if ( wd < 0 ) {
 			if ( wd == -1 ) {
 				error = errno;
@@ -1105,7 +1128,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
  *       the @a timeout period begins again each time a matching event occurs.
  */
 struct inotify_event * inotifytools_next_event( long int timeout ) {
-	return inotifytools_next_events( timeout, 1 );
+	return inotifytools_next_events( timeout, 1, 0 );
 }
 
 
@@ -1157,7 +1180,8 @@ struct inotify_event * inotifytools_next_event( long int timeout ) {
  *       which match the regular expression passed to that function.  However,
  *       the @a timeout period begins again each time a matching event occurs.
  */
-struct inotify_event * inotifytools_next_events( long int timeout, int num_events ) {
+struct inotify_event * inotifytools_next_events( long int timeout,
+						 int num_events, int fanotify ) {
 	niceassert( init, "inotifytools_initialize not called yet" );
 	niceassert( num_events <= MAX_EVENTS, "too many events requested" );
 
@@ -1217,7 +1241,7 @@ struct inotify_event * inotifytools_next_events( long int timeout, int num_event
 			// how much of the event do we have?
 			bytes = (char *)&event[0] + bytes - (char *)ret;
 			memcpy( &event[0], ret, bytes );
-			return inotifytools_next_events( timeout, num_events );
+			return inotifytools_next_events( timeout, num_events, 0 );
 		}
 		RETURN(ret);
 
@@ -1278,6 +1302,10 @@ struct inotify_event * inotifytools_next_events( long int timeout, int num_event
 	bytes += this_bytes;
 
 	ret = &event[0];
+	// TODO: get fanotify events
+	if ( fanotify )
+		return ret;
+
 	first_byte = sizeof(struct inotify_event) + ret->len;
 	niceassert( first_byte <= bytes, "ridiculously long filename, things will "
 	                                 "almost certainly screw up." );

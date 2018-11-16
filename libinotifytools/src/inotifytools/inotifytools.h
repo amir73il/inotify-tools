@@ -22,7 +22,7 @@ int inotifytools_wd_from_filename( char const * filename );
 int inotifytools_remove_watch_by_filename( char const * filename );
 int inotifytools_remove_watch_by_wd( int wd );
 int inotifytools_watch_file( char const * filename, int events );
-int inotifytools_watch_files( char const * filenames[], int events );
+int inotifytools_watch_files( char const * filenames[], int events, int fanotify );
 int inotifytools_watch_recursively( char const * path, int events );
 int inotifytools_watch_recursively_with_exclude( char const * path,
                                                  int events,
@@ -31,7 +31,8 @@ int inotifytools_watch_recursively_with_exclude( char const * path,
 int inotifytools_ignore_events_by_regex( char const *pattern, int flags );
 int inotifytools_ignore_events_by_inverted_regex( char const *pattern, int flags );
 struct inotify_event * inotifytools_next_event( long int timeout );
-struct inotify_event * inotifytools_next_events( long int timeout, int num_events );
+struct inotify_event * inotifytools_next_events( long int timeout,
+						 int num_events, int fanotify );
 int inotifytools_error();
 int inotifytools_get_stat_by_wd( int wd, int event );
 int inotifytools_get_stat_total( int event );
@@ -39,6 +40,7 @@ int inotifytools_get_stat_by_filename( char const * filename,
                                                 int event );
 void inotifytools_initialize_stats();
 int inotifytools_initialize();
+int inotifytools_init(int fanotify);
 void inotifytools_cleanup();
 int inotifytools_get_num_watches();
 
