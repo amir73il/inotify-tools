@@ -368,7 +368,7 @@ int main(int argc, char **argv) {
             }
         }
 
-	// TODO: index files from unknown watches
+	// TODO: replace filename of renamed global watch entries
 	if (global)
 		continue;
 
