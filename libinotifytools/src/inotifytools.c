@@ -156,6 +156,7 @@ static char* timefmt = 0;
 static regex_t* regex = 0;
 /* 0: --exclude[i], 1: --include[i] */
 static int invert_regexp = 0;
+static int chdired = 0;
 
 static int isdir( char const * path );
 void record_stats( struct inotify_event const * event );
@@ -930,6 +931,10 @@ watch *create_watch(int wd, struct fanotify_event_fid *fid, char *filename) {
 	if ( wd < 0 || !filename) return 0;
 
 	watch *w = (watch*)calloc(1, sizeof(watch));
+	if (!w) {
+		fprintf( stderr, "Failed to allocate watch.\n");
+		return NULL;
+	}
 	w->wd = wd ?: (unsigned long)fid;
 	w->fid = fid;
 	w->filename = strdup(filename);
@@ -937,7 +942,7 @@ watch *create_watch(int wd, struct fanotify_event_fid *fid, char *filename) {
 	if (fid)
 		rbsearch(w, tree_fid);
 	rbsearch(w, tree_filename);
-    return NULL;
+	return w;
 }
 
 /**
@@ -1084,6 +1089,13 @@ int inotifytools_watch_files( char const * filenames[], int events,
 					filenames[i], strerror(errno));
 				return 0;
 			}
+			// Hack in order to use AT_FDCWD in open_by_handle_at()
+			// instead of keeping a map of fsid => mount_fd and
+			// avoid keeping open mount_fd which will prevent umount
+			// of monitored filesystem. We try to decode fids from
+			// current workdir or from first directory agument.
+			if (!chdired && isdir(filenames[i]))
+				chdired = !chdir(filenames[i]);
 		}
 		char *filename;
 		// Always end filename with / if it is a directory
@@ -1310,12 +1322,36 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
 		}
+		ret = &event[MAX_EVENTS];
 		watch *w = watch_from_fid(fid);
 		if (!w) {
-			fprintf(stderr, "Ignoring fanotify event on unwatched object.\n");
-			longjmp(jmp,0);
+			// TODO: match mount_fd from fid->fsid
+			int fd = open_by_handle_at(AT_FDCWD,
+						(void *)&fid->handle_bytes, 0);
+			if (fd < 0) {
+				fprintf(stderr, "Failed to decode fid.\n");
+				longjmp(jmp,0);
+			}
+			char sym[20];
+			sprintf(sym, "/proc/self/fd/%d", fd);
+			ret->len = readlink(sym, ret->name, PATH_MAX);
+			close(fd);
+			if (ret->len < 0) {
+				fprintf(stderr, "Failed to resolve path from fid.\n");
+				longjmp(jmp,0);
+			}
+			ret->name[ret->len] = 0;
+			fid = calloc(1, info->info_len);
+			if (!fid) {
+				fprintf( stderr, "Failed to allocate fid.\n");
+				return NULL;
+			}
+			memcpy(fid, info->info, info->info_len);
+			w = create_watch(0, fid, ret->name);
+			if (!w) return NULL;
+			printf("...Start watching %s (fid=%lx...)\n",
+			       ret->name, *(unsigned long *)fid->f_handle);
 		}
-		ret = &event[MAX_EVENTS];
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
 		ret->len = 0;
