@@ -1203,6 +1203,7 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 	static struct inotify_event * ret;
 	static int first_byte = 0;
 	static ssize_t bytes;
+	static ssize_t this_bytes;
 	static jmp_buf jmp;
 	static char match_name[MAX_STRLEN];
 
@@ -1232,14 +1233,7 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 	  && first_byte <= (int)(bytes - sizeof(struct inotify_event)) ) {
 
 		ret = (struct inotify_event *)((char *)&event[0] + first_byte);
-		first_byte += sizeof(struct inotify_event) + ret->len;
-
-		// if the pointer to the next event exactly hits end of bytes read,
-		// that's good.  next time we're called, we'll read.
-		if ( first_byte == bytes ) {
-			first_byte = 0;
-		}
-		else if ( first_byte > bytes ) {
+		if (!fanotify && first_byte + sizeof(*ret) + ret->len > bytes) {
 			// oh... no.  this can't be happening.  An incomplete event.
 			// Copy what we currently have into first element, call self to
 			// read remainder.
@@ -1255,7 +1249,8 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 			memcpy( &event[0], ret, bytes );
 			return inotifytools_next_events( timeout, num_events, 0 );
 		}
-		RETURN(ret);
+		this_bytes = 0;
+		goto more_events;
 
 	}
 
@@ -1264,7 +1259,6 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 	}
 
 
-	static ssize_t this_bytes;
 	static unsigned int bytes_to_read;
 	static int rc;
 	static fd_set read_fds;
@@ -1311,11 +1305,15 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 		                "events occurred at once.\n");
 		return NULL;
 	}
+more_events:
+	ret = (struct inotify_event *)((char *)&event[0] + first_byte);
 	// convert fanotify events to inotify events
 	if ( fanotify ) {
-		struct fanotify_event_metadata *meta = (void *)&event[0];
+		struct fanotify_event_metadata *meta = (void *)ret;
 		struct fanotify_event_info *info = FAN_EVENT_INFO(meta);
 		struct fanotify_event_fid *fid;
+		//printf("bytes=%ld, first_byte=%d, this_bytes=%ld, meta->len=%d\n",
+		//       bytes, first_byte, this_bytes, meta->event_len);
 		if (info && info->info_type == FAN_EVENT_INFO_TYPE_FID) {
 			fid = (void *)info->info;
 		} else {
@@ -1355,13 +1353,13 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 		ret->mask = (uint32_t)meta->mask;
 		ret->len = 0;
 
-		RETURN(ret);
+		first_byte += meta->event_len;
+	} else {
+		first_byte += sizeof(struct inotify_event) + ret->len;
 	}
 
 	bytes += this_bytes;
 
-	ret = &event[0];
-	first_byte = sizeof(struct inotify_event) + ret->len;
 	niceassert( first_byte <= bytes, "ridiculously long filename, things will "
 	                                 "almost certainly screw up." );
 	if ( first_byte == bytes ) {
