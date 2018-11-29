@@ -117,20 +117,22 @@ struct fanotify_event_metadata {
 
 #define FAN_EVENT_INFO_TYPE_FID		1
 
-/* Variable length info record header following event metadata */
-struct fanotify_event_info {
+/* Variable length info record following event metadata */
+struct fanotify_event_info_header {
 	__u8 info_type;
-	__u8 reserved;
-	__u16 info_len;
-	unsigned char info[0];
+	__u8 pad;
+	__u16 len;
 };
 
 /* Unique file identifier info record */
-struct fanotify_event_fid {
+struct fanotify_event_info_fid {
+	struct fanotify_event_info_header hdr;
 	__kernel_fsid_t fsid;
-	__u32 handle_bytes;
-	__s32 handle_type;
-	unsigned char f_handle[0];
+	/*
+	 * Following is an opaque struct file_handle that can be passed as
+	 * an argument to open_by_handle_at(2).
+	 */
+	unsigned char handle[0];
 };
 
 struct fanotify_response {
@@ -149,20 +151,13 @@ struct fanotify_response {
 /* Helper functions to deal with fanotify_event_metadata buffers */
 #define FAN_EVENT_METADATA_LEN (sizeof(struct fanotify_event_metadata))
 
-#define FAN_EVENT_NEXT(meta, len) \
-	((len) -= (meta)->event_len, \
-	 (struct fanotify_event_metadata *)(((char *)(meta)) + \
-					   (meta)->event_len))
+#define FAN_EVENT_NEXT(meta, len) ((len) -= (meta)->event_len, \
+				   (struct fanotify_event_metadata*)(((char *)(meta)) + \
+				   (meta)->event_len))
 
-#define FAN_EVENT_OK(meta, len)	\
-	((long)(len) >= (long)FAN_EVENT_METADATA_LEN && \
-	 (long)(meta)->event_len >= (long)FAN_EVENT_METADATA_LEN && \
-	 (long)(meta)->event_len <= (long)(len))
-
-/* Get the first event info record if one exists */
-#define FAN_EVENT_INFO(meta)	\
-	((long)(meta)->event_len > (long)FAN_EVENT_METADATA_LEN ? \
-	 (struct fanotify_event_info *)((meta) + 1) : NULL)
+#define FAN_EVENT_OK(meta, len)	((long)(len) >= (long)FAN_EVENT_METADATA_LEN && \
+				(long)(meta)->event_len >= (long)FAN_EVENT_METADATA_LEN && \
+				(long)(meta)->event_len <= (long)(len))
 
 #endif /* _LINUX_FANOTIFY_H */
 

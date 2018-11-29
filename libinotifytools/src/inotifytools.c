@@ -37,6 +37,12 @@
 #include "inotifytools/inotify.h"
 #include "inotifytools/fanotify.h"
 
+struct fanotify_event_fid {
+	__kernel_fsid_t fsid;
+	struct file_handle handle;
+};
+
+
 /**
  * @file inotifytools/inotifytools.h
  * @brief inotifytools library public interface.
@@ -258,8 +264,8 @@ int fid_compare(const void *d1, const void *d2, const void *config) {
 	watch *w1 = (watch*)d1;
 	watch *w2 = (watch*)d2;
 	int n1, n2;
-	n1 = w1->fid->handle_bytes;
-	n2 = w2->fid->handle_bytes;
+	n1 = w1->fid->handle.handle_bytes;
+	n2 = w2->fid->handle.handle_bytes;
 	if (n1 != n2) return n1 - n2;
 	return memcmp(w1->fid, w2->fid, sizeof(*(w1->fid)) + n1);
 }
@@ -1122,11 +1128,10 @@ int inotifytools_watch_files( char const * filenames[], int events,
 				create_watch(mntid, fsid, mntname);
 			}
 
-			fid->handle_bytes = MAX_FID_LEN;
+			fid->handle.handle_bytes = MAX_FID_LEN;
 			ret = name_to_handle_at(AT_FDCWD, filenames[i],
-						(void *)&fid->handle_bytes,
-						&mntid, 0);
-			if (ret || fid->handle_bytes > MAX_FID_LEN) {
+						(void *)&fid->handle, &mntid, 0);
+			if (ret || fid->handle.handle_bytes > MAX_FID_LEN) {
 				free(fid);
 				fprintf(stderr, "Failed to encode fid on %s: %s\n",
 					filenames[i], strerror(errno));
@@ -1337,12 +1342,16 @@ more_events:
 	// convert fanotify events to inotify events
 	if ( fanotify ) {
 		struct fanotify_event_metadata *meta = (void *)ret;
-		struct fanotify_event_info *info = FAN_EVENT_INFO(meta);
+		struct fanotify_event_info_fid *info = (void *)(meta+1);
 		struct fanotify_event_fid *fid;
+		int fid_len = 0;
+
 		//printf("bytes=%ld, first_byte=%d, this_bytes=%ld, meta->len=%d\n",
 		//       bytes, first_byte, this_bytes, meta->event_len);
-		if (info && info->info_type == FAN_EVENT_INFO_TYPE_FID) {
-			fid = (void *)info->info;
+		if (meta->event_len > sizeof(*meta) &&
+		    info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID) {
+			fid = (void *)(((char *)info) + sizeof(info->hdr));
+			fid_len = info->hdr.len - sizeof(info->hdr);
 		} else {
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
@@ -1350,7 +1359,7 @@ more_events:
 		ret = &event[MAX_EVENTS];
 		watch *w = watch_from_fid(fid);
 		if (!w) {
-			struct fanotify_event_fid *fsid;
+			struct fanotify_event_fid *fsid, *newfid;
 			int mount_fd = AT_FDCWD;
 
 			fsid = calloc(1, sizeof(*fsid));
@@ -1365,8 +1374,7 @@ more_events:
 			if (mnt)
 				mount_fd = mnt->wd >> 1;
 
-			int fd = open_by_handle_at(mount_fd,
-						(void *)&fid->handle_bytes, 0);
+			int fd = open_by_handle_at(mount_fd, &fid->handle, 0);
 			if (fd < 0) {
 				fprintf(stderr, "Failed to decode fid.\n");
 				longjmp(jmp,0);
@@ -1380,17 +1388,17 @@ more_events:
 				longjmp(jmp,0);
 			}
 			ret->name[ret->len] = 0;
-			fid = calloc(1, info->info_len);
-			if (!fid) {
+			newfid = calloc(1, fid_len);
+			if (!newfid) {
 				fprintf( stderr, "Failed to allocate fid.\n");
 				return NULL;
 			}
-			memcpy(fid, info->info, info->info_len);
-			w = create_watch(0, fid, ret->name);
+			memcpy(newfid, fid, fid_len);
+			w = create_watch(0, newfid, ret->name);
 			if (!w) return NULL;
 			printf("...Start watching %s (fid=%x.%x.%lx...)\n",
 			       ret->name, fid->fsid.val[0], fid->fsid.val[1],
-			       *(unsigned long *)fid->f_handle);
+			       *(unsigned long *)fid->handle.f_handle);
 		}
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
