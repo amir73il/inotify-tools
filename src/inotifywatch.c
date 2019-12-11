@@ -121,9 +121,8 @@ int main(int argc, char **argv) {
     if (!events)
         events = IN_ALL_EVENTS;
 
-    if (global) {
-	    events |= IN_ISDIR;
-    }
+    // Implicit for inotify, but explicit for fanotify
+    events |= IN_ISDIR;
 
     FileList list = construct_path_list(argc, argv, fromfile);
 
@@ -138,7 +137,7 @@ int main(int argc, char **argv) {
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
         if (global) {
-		if (!inotifytools_watch_files(list.watch_files, events, 1)) {
+		if (!inotifytools_watch_files(list.watch_files, events)) {
 			fprintf(stderr, "Couldn't add global watch(es)"
 				     " %s...: %s\n", this_file,
 				     strerror(inotifytools_error()));
@@ -201,7 +200,7 @@ int main(int argc, char **argv) {
     char *moved_from = 0;
 
     do {
-        event = inotifytools_next_events(BLOCKING_TIMEOUT, 1, global);
+        event = inotifytools_next_events(BLOCKING_TIMEOUT, 1);
         if (!event) {
             if (!inotifytools_error()) {
                 return EXIT_TIMEOUT;
