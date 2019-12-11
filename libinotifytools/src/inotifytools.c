@@ -158,6 +158,8 @@ struct rbtree *tree_fid = 0;
 struct rbtree *tree_filename = 0;
 static int error = 0;
 static int init = 0;
+static int fanotify = 0;
+static int fanotify_mark_type = 0;
 static char* timefmt = 0;
 static regex_t* regex = 0;
 /* 0: --exclude[i], 1: --include[i] */
@@ -312,15 +314,19 @@ watch *watch_from_filename( char const *filename ) {
  * @return 1 on success, 0 on failure.  On failure, the error can be
  *         obtained from inotifytools_error().
  */
-int inotifytools_init(int fanotify) {
+int inotifytools_init(int global) {
 	if (init) return 1;
 
 	error = 0;
-	// Try to initialise inotify/fanotify
-	if (fanotify)
-		inotify_fd = fanotify_init(FAN_REPORT_FID, 0);
-	else
+	// Try to initialise fanotify - fall back to inotify
+	fanotify = 1;
+	fanotify_mark_type = (global ? FAN_MARK_FILESYSTEM : FAN_MARK_INODE);
+	int unpriv = global ? 0 : FAN_UNPRIVILEGED;
+	inotify_fd = fanotify_init(FAN_REPORT_FID | unpriv, 0);
+	if (!global && inotify_fd < 0) {
 		inotify_fd = inotify_init();
+		fanotify = 0;
+	}
 	if (inotify_fd < 0)	{
 		error = errno;
 		return 0;
@@ -1016,7 +1022,7 @@ int inotifytools_watch_file( char const * filename, int events ) {
 	static char const * filenames[2];
 	filenames[0] = filename;
 	filenames[1] = NULL;
-	return inotifytools_watch_files( filenames, events, 0 );
+	return inotifytools_watch_files( filenames, events );
 }
 
 /**
@@ -1034,8 +1040,7 @@ int inotifytools_watch_file( char const * filename, int events ) {
  * @return 1 on success, 0 on failure.  On failure, the error can be
  *         obtained from inotifytools_error().
  */
-int inotifytools_watch_files( char const * filenames[], int events,
-			      int fanotify ) {
+int inotifytools_watch_files( char const * filenames[], int events ) {
 	niceassert( init, "inotifytools_initialize not called yet" );
 	error = 0;
 
@@ -1048,7 +1053,7 @@ int inotifytools_watch_files( char const * filenames[], int events,
 			 * already set.
 			 */
 			wd = fanotify_mark( inotify_fd,
-					    FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+					    FAN_MARK_ADD | fanotify_mark_type,
 					    events, AT_FDCWD, filenames[i] );
 		} else {
 			wd = inotify_add_watch( inotify_fd, filenames[i], events );
@@ -1172,7 +1177,7 @@ int inotifytools_watch_files( char const * filenames[], int events,
  *       the @a timeout period begins again each time a matching event occurs.
  */
 struct inotify_event * inotifytools_next_event( long int timeout ) {
-	return inotifytools_next_events( timeout, 1, 0 );
+	return inotifytools_next_events( timeout, 1 );
 }
 
 
@@ -1224,8 +1229,7 @@ struct inotify_event * inotifytools_next_event( long int timeout ) {
  *       which match the regular expression passed to that function.  However,
  *       the @a timeout period begins again each time a matching event occurs.
  */
-struct inotify_event * inotifytools_next_events( long int timeout,
-						 int num_events, int fanotify ) {
+struct inotify_event * inotifytools_next_events( long int timeout, int num_events ) {
 	niceassert( init, "inotifytools_initialize not called yet" );
 	niceassert( num_events <= MAX_EVENTS, "too many events requested" );
 
@@ -1279,7 +1283,7 @@ struct inotify_event * inotifytools_next_events( long int timeout,
 			// how much of the event do we have?
 			bytes = (char *)&event[0] + bytes - (char *)ret;
 			memcpy( &event[0], ret, bytes );
-			return inotifytools_next_events( timeout, num_events, 0 );
+			return inotifytools_next_events( timeout, num_events );
 		}
 		this_bytes = 0;
 		goto more_events;
