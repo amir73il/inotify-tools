@@ -116,6 +116,8 @@ struct fanotify_event_metadata {
 };
 
 #define FAN_EVENT_INFO_TYPE_FID		1
+#define FAN_EVENT_INFO_TYPE_DFID_NAME	2
+#define FAN_EVENT_INFO_TYPE_DFID	3
 
 /* Variable length info record following event metadata */
 struct fanotify_event_info_header {
