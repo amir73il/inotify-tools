@@ -27,6 +27,8 @@
 
 #define FAN_ONDIR		0x40000000	/* event occurred against dir */
 
+#define FAN_WITH_NAME		0x02000000	/* Interested in events with name */
+
 #define FAN_EVENT_ON_CHILD	0x08000000	/* interested in child events */
 
 /* helper events */
@@ -54,7 +56,10 @@
 /* Flags to determine fanotify event format */
 #define FAN_REPORT_TID		0x00000100	/* event->pid is thread id */
 #define FAN_REPORT_FID		0x00000200	/* Report unique file id */
+#define FAN_REPORT_NAME		0x00000400	/* Report events with name */
 
+/* Convenience macro - FAN_REPORT_NAME requires FAN_REPORT_FID */
+#define FAN_REPORT_FID_NAME	(FAN_REPORT_FID | FAN_REPORT_NAME)
 
 /* Deprecated - do not use this in programs and do not add new flags here! */
 #define FAN_ALL_INIT_FLAGS	(FAN_CLOEXEC | FAN_NONBLOCK | \
@@ -118,6 +123,7 @@ struct fanotify_event_metadata {
 };
 
 #define FAN_EVENT_INFO_TYPE_FID		1
+#define FAN_EVENT_INFO_TYPE_FID_NAME	2
 
 /* Variable length info record following event metadata */
 struct fanotify_event_info_header {

@@ -160,6 +160,7 @@ static int error = 0;
 static int init = 0;
 static int fanotify = 0;
 static int fanotify_mark_type = 0;
+static int fanotify_mask = 0;
 static char* timefmt = 0;
 static regex_t* regex = 0;
 /* 0: --exclude[i], 1: --include[i] */
@@ -322,7 +323,7 @@ int inotifytools_init(int global) {
 	fanotify = 1;
 	fanotify_mark_type = (global ? FAN_MARK_FILESYSTEM : FAN_MARK_INODE);
 	int unpriv = global ? 0 : FAN_UNPRIVILEGED;
-	inotify_fd = fanotify_init(FAN_REPORT_FID | unpriv, 0);
+	inotify_fd = fanotify_init(FAN_REPORT_FID_NAME | unpriv, 0);
 	if (!global && inotify_fd < 0) {
 		inotify_fd = inotify_init();
 		fanotify = 0;
@@ -1054,7 +1055,9 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			 */
 			wd = fanotify_mark( inotify_fd,
 					    FAN_MARK_ADD | fanotify_mark_type,
-					    events, AT_FDCWD, filenames[i] );
+					    events | FAN_EVENT_ON_CHILD,
+					    AT_FDCWD, filenames[i] );
+			fanotify_mask = events;
 		} else {
 			wd = inotify_add_watch( inotify_fd, filenames[i], events );
 		}
@@ -1347,16 +1350,31 @@ more_events:
 	if ( fanotify ) {
 		struct fanotify_event_metadata *meta = (void *)ret;
 		struct fanotify_event_info_fid *info = (void *)(meta+1);
-		struct fanotify_event_fid *fid;
+		struct fanotify_event_fid *fid = NULL;
+		const char *name = "";
 		int fid_len = 0;
+		int name_len = 0;
+
+		first_byte += meta->event_len;
 
 		//printf("bytes=%ld, first_byte=%d, this_bytes=%ld, meta->len=%d\n",
 		//       bytes, first_byte, this_bytes, meta->event_len);
-		if (meta->event_len > sizeof(*meta) &&
-		    info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID) {
-			fid = (void *)(((char *)info) + sizeof(info->hdr));
-			fid_len = info->hdr.len - sizeof(info->hdr);
-		} else {
+		if (meta->event_len > sizeof(*meta)) {
+			switch (info->hdr.info_type) {
+				case FAN_EVENT_INFO_TYPE_FID:
+				case FAN_EVENT_INFO_TYPE_FID_NAME:
+					fid = (void *)(((char *)info) + sizeof(info->hdr));
+					fid_len = sizeof(*fid) + fid->handle.handle_bytes;
+					if (info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID_NAME)
+						name_len = info->hdr.len - sizeof(info->hdr) - fid_len;
+					if (name_len > 0)
+						name = ((const char *)info) + info->hdr.len - name_len;
+					//printf("fid_len=%d, name_len=%d, name=%s, meta->len=%d\n",
+					//	fid_len, name_len, name, meta->event_len);
+					break;
+			}
+		}
+		if (!fid) {
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
 		}
@@ -1406,9 +1424,9 @@ more_events:
 		}
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
-		ret->len = 0;
-
-		first_byte += meta->event_len;
+		ret->len = name_len;
+		if (name_len > 0)
+			memcpy(ret->name, name, name_len);
 	} else {
 		first_byte += sizeof(struct inotify_event) + ret->len;
 	}

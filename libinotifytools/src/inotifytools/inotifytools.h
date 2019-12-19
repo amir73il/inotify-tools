@@ -8,6 +8,7 @@ extern "C"
 
 #include <stdio.h>
 
+#define IN_ALL_SELF_EVENTS ( IN_MOVE_SELF | IN_DELETE_SELF )
 #define IN_ALL_READ_EVENTS ( IN_OPEN | IN_ACCESS | IN_CLOSE_NOWRITE )
 #define IN_ALL_WRITE_EVENTS ( IN_ALL_EVENTS & ~IN_ALL_READ_EVENTS )
 
