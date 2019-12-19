@@ -10,6 +10,7 @@ extern "C"
 
 #define IN_ALL_READ_EVENTS ( IN_OPEN | IN_ACCESS | IN_CLOSE_NOWRITE )
 #define IN_ALL_WRITE_EVENTS ( IN_ALL_EVENTS & ~IN_ALL_READ_EVENTS )
+#define FAN_ALL_WRITE_EVENTS ( IN_ALL_WRITE_EVENTS | FAN_DIR_MODIFY )
 
 int inotifytools_str_to_event(char const * event);
 int inotifytools_str_to_event_sep(char const * event, char sep);

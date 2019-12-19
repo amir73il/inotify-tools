@@ -22,6 +22,7 @@
 
 #include <inotifytools/inotify.h>
 #include <inotifytools/inotifytools.h>
+#include <inotifytools/fanotify.h>
 
 extern char *optarg;
 extern int optind, opterr, optopt;
@@ -322,6 +323,9 @@ int print_info() {
     if ((IN_UNMOUNT & events) &&
         (zero || inotifytools_get_stat_total(IN_UNMOUNT)))
         printf("unmount  ");
+    if ((FAN_DIR_MODIFY & events) &&
+        (zero || inotifytools_get_stat_total(FAN_DIR_MODIFY)))
+        printf("dir_modify  ");
 
     printf("filename\n");
 
@@ -374,6 +378,9 @@ int print_info() {
         if ((IN_UNMOUNT & events) &&
             (zero || inotifytools_get_stat_total(IN_UNMOUNT)))
             printf("%-7u  ", w->hit_unmount);
+        if ((FAN_DIR_MODIFY & events) &&
+            (zero || inotifytools_get_stat_total(FAN_DIR_MODIFY)))
+            printf("%-10u  ", w->hit_dir_modify);
 
         printf("%s\n", w->filename);
         w = (watch *)rbreadlist(rblist);
@@ -502,7 +509,7 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
         // --writes or -w
         case 'w':
             // Add all filesystem modification events to the event mask
-            (*events) = ((*events) | IN_ALL_WRITE_EVENTS);
+            (*events) = ((*events) | FAN_ALL_WRITE_EVENTS);
             break;
 
         // --event or -e

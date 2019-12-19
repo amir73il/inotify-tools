@@ -15,6 +15,7 @@ typedef struct watch {
 	unsigned long wd;
 	unsigned hit_access;
 	unsigned hit_modify;
+	unsigned hit_dir_modify;
 	unsigned hit_attrib;
 	unsigned hit_close_write;
 	unsigned hit_close_nowrite;

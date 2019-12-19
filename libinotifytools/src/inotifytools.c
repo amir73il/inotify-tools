@@ -139,6 +139,7 @@ struct fanotify_event_fid {
 static int inotify_fd;
 static unsigned  num_access;
 static unsigned  num_modify;
+static unsigned  num_dir_modify;
 static unsigned  num_attrib;
 static unsigned  num_close_nowrite;
 static unsigned  num_close_write;
@@ -160,6 +161,7 @@ static int error = 0;
 static int init = 0;
 static int fanotify = 0;
 static int fanotify_mark_type = 0;
+static int fanotify_mask = 0;
 static char* timefmt = 0;
 static regex_t* regex = 0;
 /* 0: --exclude[i], 1: --include[i] */
@@ -404,6 +406,7 @@ void empty_stats(const void *nodep,
 	watch *w = (watch*)nodep;
 	w->hit_access = 0;
 	w->hit_modify = 0;
+	w->hit_dir_modify = 0;
 	w->hit_attrib = 0;
 	w->hit_close_nowrite = 0;
 	w->hit_close_write = 0;
@@ -476,6 +479,7 @@ void inotifytools_initialize_stats() {
 
 	num_access = 0;
 	num_modify = 0;
+	num_dir_modify = 0;
 	num_attrib = 0;
 	num_close_nowrite = 0;
 	num_close_write = 0;
@@ -615,6 +619,8 @@ int onestr_to_event(char const * event)
 		ret = IN_ACCESS;
 	else if ( 0 == strcasecmp(event, "MODIFY") )
 		ret = IN_MODIFY;
+	else if ( 0 == strcasecmp(event, "DIR_MODIFY") )
+		ret = FAN_DIR_MODIFY;
 	else if ( 0 == strcasecmp(event, "ATTRIB") )
 		ret = IN_ATTRIB;
 	else if ( 0 == strcasecmp(event, "CLOSE_WRITE") )
@@ -717,6 +723,10 @@ char * inotifytools_event_to_str_sep(int events, char sep)
 	if ( IN_MODIFY & events ) {
 		strcat( ret, chrtostr(sep) );
 		strcat( ret, "MODIFY" );
+	}
+	if ( FAN_DIR_MODIFY & events ) {
+		strcat( ret, chrtostr(sep) );
+		strcat( ret, "DIR_MODIFY" );
 	}
 	if ( IN_ATTRIB & events ) {
 		strcat( ret, chrtostr(sep) );
@@ -1055,6 +1065,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			wd = fanotify_mark( inotify_fd,
 					    FAN_MARK_ADD | fanotify_mark_type,
 					    events, AT_FDCWD, filenames[i] );
+			fanotify_mask = events;
 		} else {
 			wd = inotify_add_watch( inotify_fd, filenames[i], events );
 		}
@@ -1347,16 +1358,33 @@ more_events:
 	if ( fanotify ) {
 		struct fanotify_event_metadata *meta = (void *)ret;
 		struct fanotify_event_info_fid *info = (void *)(meta+1);
-		struct fanotify_event_fid *fid;
+		struct fanotify_event_fid *fid = NULL;
+		const char *name = "";
 		int fid_len = 0;
+		int name_len = 0;
+
+		first_byte += meta->event_len;
 
 		//printf("bytes=%ld, first_byte=%d, this_bytes=%ld, meta->len=%d\n",
 		//       bytes, first_byte, this_bytes, meta->event_len);
-		if (meta->event_len > sizeof(*meta) &&
-		    info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID) {
-			fid = (void *)(((char *)info) + sizeof(info->hdr));
-			fid_len = info->hdr.len - sizeof(info->hdr);
-		} else {
+		if (meta->event_len > sizeof(*meta)) {
+			switch (info->hdr.info_type) {
+				case FAN_EVENT_INFO_TYPE_FID:
+				case FAN_EVENT_INFO_TYPE_FID_NAME:
+					fid = (void *)(((char *)info) + sizeof(info->hdr));
+					fid_len = sizeof(*fid) + fid->handle.handle_bytes;
+					if (info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID_NAME)
+						name_len = info->hdr.len - fid_len;
+					if (name_len && !fid->handle.f_handle[fid->handle.handle_bytes])
+						name_len = 0; // empty name??
+					if (name_len > 0)
+						name = fid->handle.f_handle + fid->handle.handle_bytes;
+					//printf("fid_len=%d, name_len=%d, name=%s, meta->len=%d\n",
+					//	fid_len, name_len, name, meta->event_len);
+					break;
+			}
+		}
+		if (!fid) {
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
 		}
@@ -1406,9 +1434,9 @@ more_events:
 		}
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
-		ret->len = 0;
-
-		first_byte += meta->event_len;
+		ret->len = name_len;
+		if (name_len > 0)
+			memcpy(ret->name, name, name_len);
 	} else {
 		first_byte += sizeof(struct inotify_event) + ret->len;
 	}
@@ -1602,6 +1630,10 @@ void record_stats( struct inotify_event const * event ) {
 		++w->hit_modify;
 		++num_modify;
 	}
+	if ( FAN_DIR_MODIFY & event->mask ) {
+		++w->hit_dir_modify;
+		++num_dir_modify;
+	}
 	if ( IN_ATTRIB & event->mask ) {
 		++w->hit_attrib;
 		++num_attrib;
@@ -1658,6 +1690,8 @@ unsigned int *stat_ptr(watch *w, int event)
 		return &w->hit_access;
 	if ( IN_MODIFY == event )
 		return &w->hit_modify;
+	if ( FAN_DIR_MODIFY == event )
+		return &w->hit_dir_modify;
 	if ( IN_ATTRIB == event )
 		return &w->hit_attrib;
 	if ( IN_CLOSE_WRITE == event )
@@ -1729,6 +1763,8 @@ int inotifytools_get_stat_total( int event ) {
 		return num_access;
 	if ( IN_MODIFY == event )
 		return num_modify;
+	if ( FAN_DIR_MODIFY == event )
+		return num_dir_modify;
 	if ( IN_ATTRIB == event )
 		return num_attrib;
 	if ( IN_CLOSE_WRITE == event )

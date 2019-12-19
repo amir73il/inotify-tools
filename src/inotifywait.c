@@ -23,6 +23,7 @@
 
 #include <inotifytools/inotify.h>
 #include <inotifytools/inotifytools.h>
+#include <inotifytools/fanotify.h>
 
 extern char *optarg;
 extern int optind, opterr, optopt;
@@ -623,7 +624,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         // --writes or -w
         case 'w':
             // Add all filesystem modification events to the event mask
-            (*events) = ((*events) | IN_ALL_WRITE_EVENTS);
+            (*events) = ((*events) | FAN_ALL_WRITE_EVENTS);
             break;
 
         // --event or -e
