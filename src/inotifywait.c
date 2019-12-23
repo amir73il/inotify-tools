@@ -334,6 +334,12 @@ int main(int argc, char **argv) {
     if (!quiet) {
         output_error(syslog, "Watches established.\n");
     }
+    if (timeout < BLOCKING_TIMEOUT) {
+        if (!quiet)
+            output_error(syslog, "Sleeping for %ld seconds...\n", -timeout);
+	sleep(-timeout);
+	timeout = -timeout;
+    }
 
     // Now wait till we get event
     struct inotify_event *event;
@@ -742,12 +748,12 @@ void print_help() {
            "\t              \t%%T in --format string.\n");
     printf("\t-c|--csv      \tPrint events in CSV format.\n");
     printf("\t-t|--timeout <seconds>\n"
-           "\t              \tWhen listening for a single event, time out "
-           "after\n"
+           "\t              \tWhen listening for a single event, time out after\n"
            "\t              \twaiting for an event for <seconds> seconds.\n"
-           "\t              \tIf <seconds> is negative, inotifywait will never "
-           "time "
-           "out.\n");
+           "\t              \tIf <seconds> is -1, inotifywait will never time out.\n"
+           "\t              \tIf <seconds> is negative, inotifywait will wait\n"
+           "\t              \t-<seconds> before reading events, then listen for\n"
+           "\t              \t-<seconds>.\n");
     printf("\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
            "\t\tListen for specific event(s).  If omitted, all events are \n"
            "\t\tlistened for.\n\n");
