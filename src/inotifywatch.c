@@ -139,7 +139,7 @@ int main(int argc, char **argv) {
 
     unsigned int num_watches = 0;
     unsigned int status;
-    fprintf(stderr, "Establishing watches...\n");
+    fprintf(stdout, "Establishing %s...\n", global ? "filesystem global watch" : "watches");
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
         if (global) {
@@ -153,7 +153,7 @@ int main(int argc, char **argv) {
         }
 
         if (recursive && verbose) {
-            fprintf(stderr, "Setting up watch(es) on %s\n", this_file);
+            fprintf(stdout, "Setting up watch(es) on %s\n", this_file);
         }
 
         if (recursive) {
@@ -177,19 +177,24 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
         if (recursive && verbose) {
-            fprintf(stderr, "OK, %s is now being watched.\n", this_file);
+            fprintf(stdout, "OK, %s is now being watched.\n", this_file);
         }
     }
     num_watches = inotifytools_get_num_watches();
 
     if (verbose) {
-        fprintf(stderr, "Total of %d watches.\n", num_watches);
+        fprintf(stdout, "Total of %d watches.\n", num_watches);
     }
-    fprintf(stderr,
+    fprintf(stdout,
             "Finished establishing watches, now collecting statistics.\n");
 
+    if (timeout < BLOCKING_TIMEOUT) {
+        fprintf(stdout, "Sleeping for %ld seconds...\n", -timeout);
+	sleep(-timeout);
+	timeout = -timeout;
+    }
     if (timeout && verbose) {
-        fprintf(stderr, "Will listen for events for %ld seconds.\n", timeout);
+        fprintf(stdout, "Will listen for events for %ld seconds.\n", timeout);
     }
 
     signal(SIGINT, handle_signal);
@@ -659,9 +664,10 @@ void print_help() {
            "\t\tDo not follow symlinks.\n");
     printf("\t-t|--timeout <seconds>\n"
            "\t\tListen only for specified amount of time in seconds; if\n"
-           "\t\tomitted or negative, inotifywatch will execute until receiving "
-           "an\n"
-           "\t\tinterrupt signal.\n");
+           "\t\tomitted or -1, inotifywatch will execute until receiving an\n"
+           "\t\tinterrupt signal.\n"
+           "\t\tIf <seconds> is negative, inotifywait will wait\n"
+           "\t\t-<seconds> before reading events, then listen for -<seconds>.\n");
     printf("\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
            "\t\tListen for specific event(s).  If omitted, all events are \n"
            "\t\tlistened for.\n");
