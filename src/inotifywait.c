@@ -40,7 +40,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
 
 void print_help();
 
-char *csv_escape(char *string) {
+char *csv_escape(const char *string) {
     static char csv[MAX_STRLEN + 1];
     static unsigned int i, ind;
 
