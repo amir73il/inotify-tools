@@ -354,6 +354,7 @@ int inotifytools_initialize()
 void destroy_watch(watch *w) {
 	if (w->filename) free(w->filename);
 	if (w->fid) free(w->fid);
+	if (w->dirfd) close(w->dirfd);
 	free(w);
 }
 
@@ -810,7 +811,8 @@ const char * inotifytools_filename_from_fid( struct fanotify_event_fid *fid )
 {
 	static char filename[PATH_MAX];
 	struct fanotify_event_fid fsid = {};
-	int mount_fd = AT_FDCWD;
+	int dirfd = 0, mount_fd = AT_FDCWD;
+	int len = 0, name_len = 0;
 
 	// Match mount_fd from fid->fsid (and null fhandle)
 	fsid.info.fsid.val[0] = fid->info.fsid.val[0];
@@ -819,39 +821,71 @@ const char * inotifytools_filename_from_fid( struct fanotify_event_fid *fid )
 	fsid.info.hdr.len = sizeof(fsid);
 	watch *mnt = watch_from_fid(&fsid);
 	if (mnt)
-		mount_fd = mnt->wd >> 1;
+		mount_fd = mnt->dirfd;
 
-	int dirfd = open_by_handle_at(mount_fd, &fid->handle, 0);
-	if (dirfd < 0) {
-		fprintf(stderr, "Failed to decode directory fid.\n");
+	if (fid->info.hdr.info_type == FAN_EVENT_INFO_TYPE_FID_NAME) {
+		int fid_len = sizeof(*fid) + fid->handle.handle_bytes;
+
+		name_len = fid->info.hdr.len - fid_len;
+		if (name_len && !fid->handle.f_handle[fid->handle.handle_bytes])
+			name_len = 0; // empty name??
+	}
+
+	if (fanotify_mark_type == FAN_MARK_FILESYSTEM) {
+		// For global watch, try to get path from fid
+		dirfd = open_by_handle_at(mount_fd, &fid->handle, 0);
+		if (dirfd < 0) {
+			fprintf(stderr, "Failed to decode directory fid.\n");
+			return NULL;
+		}
+	} else if (name_len) {
+		// For recursive watch look for watch by fid without the name
+		fid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
+		fid->info.hdr.len -= name_len;
+
+		watch *w = watch_from_fid(fid);
+
+		fid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID_NAME;
+		fid->info.hdr.len += name_len;
+
+		if (!w) {
+			fprintf(stderr, "Failed to lookup path by directory fid.\n");
+			return NULL;
+		}
+
+		dirfd = w->dirfd ? dup(w->dirfd) : -1;
+		if (dirfd < 0) {
+			fprintf(stderr, "Failed to get directory fd.\n");
+			return NULL;
+		}
+	} else {
+		// Fallthrough to stored filename
 		return NULL;
 	}
-	char sym[20];
+
+	char sym[100];
 	sprintf(sym, "/proc/self/fd/%d", dirfd);
-	int len = readlink(sym, filename, PATH_MAX);
+	len = readlink(sym, filename, PATH_MAX);
 	if (len < 0) {
 		close(dirfd);
-		fprintf(stderr, "Failed to resolve path from directory fid.\n");
+		fprintf(stderr, "Failed to resolve path from directory fd.\n");
 		return NULL;
 	}
 	filename[len++] = '/';
 	filename[len] = 0;
-	if (fid->info.hdr.info_type == FAN_EVENT_INFO_TYPE_FID_NAME) {
-		int fid_len = sizeof(*fid) + fid->handle.handle_bytes;
-		int name_len = fid->info.hdr.len - fid_len;
-		if (name_len > 0) {
-			const char *name = fid->handle.f_handle + fid->handle.handle_bytes;
-			int deleted = faccessat(dirfd, name, F_OK, AT_SYMLINK_NOFOLLOW);
-			if (deleted && errno != ENOENT) {
-				fprintf(stderr, "Failed to access file by name %s (%s).\n",
-					name, strerror(errno));
-				close(dirfd);
-				return NULL;
-			}
-			memcpy(filename + len, name, name_len);
-			if (deleted)
-				strcat(filename, " (deleted)");
+
+	if (name_len > 0) {
+		const char *name = fid->handle.f_handle + fid->handle.handle_bytes;
+		int deleted = faccessat(dirfd, name, F_OK, AT_SYMLINK_NOFOLLOW);
+		if (deleted && errno != ENOENT) {
+			fprintf(stderr, "Failed to access file by name %s (%s).\n",
+				name, strerror(errno));
+			close(dirfd);
+			return NULL;
 		}
+		memcpy(filename + len, name, name_len);
+		if (deleted)
+			strcat(filename, " (deleted)");
 	}
 	close(dirfd);
 	return filename;
@@ -870,7 +904,7 @@ const char * inotifytools_filename_from_watch( watch * w )
 	if (!w->fid)
 		return w->filename;
 
-	return inotifytools_filename_from_fid(w->fid) ?: "";
+	return inotifytools_filename_from_fid(w->fid) ?: w->filename;
 }
 
 /**
@@ -1022,7 +1056,7 @@ int remove_inotify_watch(watch *w) {
 /**
  * @internal
  */
-watch *create_watch(int wd, struct fanotify_event_fid *fid, const char *filename) {
+watch *create_watch(int wd, struct fanotify_event_fid *fid, const char *filename, int dirfd) {
 	if ( wd < 0 || !filename) return 0;
 
 	watch *w = (watch*)calloc(1, sizeof(watch));
@@ -1032,6 +1066,7 @@ watch *create_watch(int wd, struct fanotify_event_fid *fid, const char *filename
 	}
 	w->wd = wd ?: (unsigned long)fid;
 	w->fid = fid;
+	w->dirfd = dirfd;
 	if (filename)
 		w->filename = strdup(filename);
 	rbsearch(w, tree_wd);
@@ -1160,6 +1195,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 
 		// Always end filename with / if it is a directory
 		char *name;
+		int dirfd = 0;
 		const char *filename, *mntname = NULL;
 		if ( !isdir(filenames[i]) ) {
 			name = strdup(filenames[i]);
@@ -1217,9 +1253,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 						mntname, strerror(errno));
 					return 0;
 				}
-				// Don't collide with fid pointers
-				mntid = (mntid << 1) | 1;
-				create_watch(mntid, fsid, mntname);
+				create_watch(0, fsid, mntname, mntid);
 			}
 
 			fid->handle.handle_bytes = MAX_FID_LEN;
@@ -1233,8 +1267,17 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			}
 			fid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
 			fid->info.hdr.len = sizeof(*fid) + fid->handle.handle_bytes;
+			if (mntname) {
+				dirfd = open(mntname, O_PATH);
+				if (dirfd < 0) {
+					free(fid);
+					fprintf(stderr, "Failed to open %s: %s\n",
+						mntname, strerror(errno));
+					return 0;
+				}
+			}
 		}
-		create_watch(wd, fid, filename);
+		create_watch(wd, fid, filename, dirfd);
 		free(name);
 	} // for
 
@@ -1482,7 +1525,7 @@ more_events:
 			memcpy(newfid, fid, info->hdr.len);
 			const char *filename = inotifytools_filename_from_fid(fid);
 			if (filename) {
-				w = create_watch(0, newfid, filename);
+				w = create_watch(0, newfid, filename, 0);
 				if (!w) return NULL;
 				printf("[fid=%x.%x.%lx;name='%s'] %s\n",
 					fid->info.fsid.val[0], fid->info.fsid.val[1],
