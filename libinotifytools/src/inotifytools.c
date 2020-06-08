@@ -320,7 +320,7 @@ int inotifytools_init(int global) {
 	// Try to initialise fanotify - fall back to inotify
 	fanotify = 1;
 	fanotify_mark_type = (global ? FAN_MARK_FILESYSTEM : FAN_MARK_INODE);
-	inotify_fd = fanotify_init(FAN_REPORT_DFID_NAME, 0);
+	inotify_fd = fanotify_init(FAN_REPORT_FID | FAN_REPORT_DFID_NAME, 0);
 	if (!global && inotify_fd < 0) {
 		inotify_fd = inotify_init();
 		fanotify = 0;
@@ -1497,11 +1497,11 @@ more_events:
 						name_len = 0; // empty name??
 					if (name_len > 0)
 						name = fid->handle.f_handle + fid->handle.handle_bytes;
-					//printf("fid_len=%d, name_len=%d, name=%s, meta->len=%d\n",
-					//	fid_len, name_len, name, meta->event_len);
 					break;
 			}
 		}
+		//printf("fid_len=%d, name_len=%d, name=%s, mask=%llx, meta->len=%d\n",
+		//	fid_len, name_len, name, meta->mask, meta->event_len);
 		if (!fid) {
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
