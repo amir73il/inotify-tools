@@ -38,10 +38,9 @@
 #include "inotifytools/fanotify.h"
 
 struct fanotify_event_fid {
-	__kernel_fsid_t fsid;
+	struct fanotify_event_info_fid info;
 	struct file_handle handle;
 };
-
 
 /**
  * @file inotifytools/inotifytools.h
@@ -266,10 +265,10 @@ int fid_compare(const void *d1, const void *d2, const void *config) {
 	watch *w1 = (watch*)d1;
 	watch *w2 = (watch*)d2;
 	int n1, n2;
-	n1 = w1->fid->handle.handle_bytes;
-	n2 = w2->fid->handle.handle_bytes;
+	n1 = w1->fid->info.hdr.len;
+	n2 = w2->fid->info.hdr.len;
 	if (n1 != n2) return n1 - n2;
-	return memcmp(w1->fid, w2->fid, sizeof(*(w1->fid)) + n1);
+	return memcmp(w1->fid, w2->fid, n1);
 }
 
 int filename_compare(const void *d1, const void *d2, const void *config) {
@@ -1073,19 +1072,23 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 		// Always end filename with / if it is a directory
 		char *name;
 		const char *filename, *mntname = NULL;
+		int info_type;
 		if ( !isdir(filenames[i]) ) {
 			name = strdup(filenames[i]);
 			filename = name;
+			info_type = FAN_EVENT_INFO_TYPE_FID;
 		} else if (filenames[i][strlen(filenames[i])-1] == '/') {
 			name = strdup(filenames[i]);
 			name[strlen(name)-1] = 0;
 			filename = filenames[i];// with /
 			mntname = name;		// without /
+			info_type = FAN_EVENT_INFO_TYPE_DFID;
 		}
 		else {
 			nasprintf( &name, "%s/", filenames[i] );
 			filename = name;	// with /
 			mntname = filenames[i]; // without /
+			info_type = FAN_EVENT_INFO_TYPE_DFID;
 		}
 
 		struct fanotify_event_fid *fid = NULL;
@@ -1103,7 +1106,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 					filenames[i], strerror(errno));
 				return 0;
 			}
-			memcpy(&fid->fsid, &buf.f_fsid, sizeof(fid->fsid));
+			memcpy(&fid->info.fsid, &buf.f_fsid, sizeof(__kernel_fsid_t));
 
 			// Hash mount_fd with fid->fsid (and null fhandle)
 			int ret, mntid;
@@ -1117,8 +1120,10 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 					fprintf( stderr, "Failed to allocate fsid" );
 					return 0;
 				}
-				fsid->fsid.val[0] = fid->fsid.val[0];
-				fsid->fsid.val[1] = fid->fsid.val[1];
+				fsid->info.fsid.val[0] = fid->info.fsid.val[0];
+				fsid->info.fsid.val[1] = fid->info.fsid.val[1];
+				fsid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
+				fsid->info.hdr.len = sizeof(*fsid);
 				mntid = open(mntname, O_RDONLY);
 				if (mntid < 0) {
 					free(fid);
@@ -1141,6 +1146,8 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 					filenames[i], strerror(errno));
 				return 0;
 			}
+			fid->info.hdr.info_type = info_type;
+			fid->info.hdr.len = sizeof(*fid) + fid->handle.handle_bytes;
 		}
 		create_watch(wd, fid, filename);
 		free(name);
@@ -1360,7 +1367,7 @@ more_events:
 				case FAN_EVENT_INFO_TYPE_FID:
 				case FAN_EVENT_INFO_TYPE_DFID:
 				case FAN_EVENT_INFO_TYPE_DFID_NAME:
-					fid = (void *)(((char *)info) + sizeof(info->hdr));
+					fid = (void *)info;
 					fid_len = sizeof(*fid) + fid->handle.handle_bytes;
 					if (info->hdr.info_type == FAN_EVENT_INFO_TYPE_DFID_NAME)
 						name_len = info->hdr.len - fid_len;
@@ -1389,8 +1396,10 @@ more_events:
 				return NULL;
 			}
 			// Match mount_fd from fid->fsid (and null fhandle)
-			fsid->fsid.val[0] = fid->fsid.val[0];
-			fsid->fsid.val[1] = fid->fsid.val[1];
+			fsid->info.fsid.val[0] = fid->info.fsid.val[0];
+			fsid->info.fsid.val[1] = fid->info.fsid.val[1];
+			fsid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
+			fsid->info.hdr.len = sizeof(*fsid);
 			watch *mnt = watch_from_fid(fsid);
 			if (mnt)
 				mount_fd = mnt->wd >> 1;
@@ -1402,24 +1411,30 @@ more_events:
 			}
 			char sym[20];
 			sprintf(sym, "/proc/self/fd/%d", fd);
-			ret->len = readlink(sym, ret->name, PATH_MAX);
+			char filename[PATH_MAX];
+			int len = readlink(sym, filename, PATH_MAX);
 			close(fd);
-			if (ret->len < 0) {
+			if (len < 0) {
 				fprintf(stderr, "Failed to resolve path from fid.\n");
 				longjmp(jmp,0);
 			}
-			ret->name[ret->len] = 0;
-			newfid = calloc(1, fid_len);
+			filename[len++] = '/';
+			if (name_len > 0) {
+				memcpy(filename + len, name, name_len);
+				len += name_len;
+			}
+			filename[len] = 0;
+			newfid = calloc(1, info->hdr.len);
 			if (!newfid) {
 				fprintf( stderr, "Failed to allocate fid.\n");
 				return NULL;
 			}
-			memcpy(newfid, fid, fid_len);
-			w = create_watch(0, newfid, ret->name);
+			memcpy(newfid, fid, info->hdr.len);
+			w = create_watch(0, newfid, filename);
 			if (!w) return NULL;
-			printf("...Start watching %s (fid=%x.%x.%lx...)\n",
-			       ret->name, fid->fsid.val[0], fid->fsid.val[1],
-			       *(unsigned long *)fid->handle.f_handle);
+			printf("...watching (fid=%x.%x.%lx;name='%s')\n",
+			       fid->info.fsid.val[0], fid->info.fsid.val[1],
+			       *(unsigned long *)fid->handle.f_handle, name);
 		}
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
