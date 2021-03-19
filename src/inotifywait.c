@@ -196,9 +196,10 @@ int main(int argc, char **argv) {
     if (monitor && recursive) {
         events = events | IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM;
     }
-    if (global) {
-	    events |= IN_ISDIR;
-    }
+
+    // Implicit for inotify, but explicit for fanotify
+    events |= IN_ISDIR;
+
     if (no_dereference) {
         events = events | IN_DONT_FOLLOW;
     }
@@ -310,7 +311,7 @@ int main(int argc, char **argv) {
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
         if (global) {
-		if (!inotifytools_watch_files(list.watch_files, events, 1)) {
+		if (!inotifytools_watch_files(list.watch_files, events)) {
 			output_error(syslog, "Couldn't add global watch(es)"
 				     " %s...: %s\n", this_file,
 				     strerror(inotifytools_error()));
@@ -348,7 +349,7 @@ int main(int argc, char **argv) {
     char *moved_from = 0;
 
     do {
-        event = inotifytools_next_events(timeout, 1, global);
+        event = inotifytools_next_events(timeout, 1);
         if (!event) {
             if (!inotifytools_error()) {
                 return EXIT_TIMEOUT;
