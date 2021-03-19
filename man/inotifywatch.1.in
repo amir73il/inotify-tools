@@ -5,7 +5,7 @@ inotifywatch \- gather filesystem access statistics using inotify
 
 .SH SYNOPSIS
 .B inotifywatch
-.RB [ \-hvzrPqf ]
+.RB [ \-hvzrgPqf ]
 .RB [ \-e
 <event> ]
 .RB [ \-t
@@ -107,8 +107,13 @@ maximum is 8192; it can be increased by writing to
 .BR /proc/sys/fs/inotify/max_user_watches .
 
 .TP
+<<<<<<< HEAD
 .B \-P, \-\-no\-dereference
 Do not follow symlinks.
+=======
+.B \-g, \-\-global
+Watch entire filesystem of any directories passed as arguments using fanotify.
+>>>>>>> 11f71cc (Initialize global filesystem fanotify watches with -g flag)
 
 .TP
 .B \-t <seconds>, \-\-timeout <seconds>
