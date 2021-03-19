@@ -32,13 +32,14 @@ extern int optind, opterr, optopt;
 
 #define nasprintf(...) niceassert(-1 != asprintf(__VA_ARGS__), "out of memory")
 
+// clang-format off
 // METHODS
 bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 long int *timeout, int *recursive, bool *csv, bool *daemon,
                 bool *syslog, bool *no_dereference, char **format,
                 char **timefmt, char **fromfile, char **outfile,
                 char **exc_regex, char **exc_iregex, char **inc_regex,
-                char **inc_iregex, bool *no_newline);
+                char **inc_iregex, bool *no_newline, bool *global);
 
 void print_help();
 
@@ -135,6 +136,7 @@ int main(int argc, char **argv) {
     int quiet = 0;
     long int timeout = BLOCKING_TIMEOUT;
     int recursive = 0;
+    bool global = false;
     bool csv = false;
     bool dodaemon = false;
     bool syslog = false;
@@ -154,11 +156,12 @@ int main(int argc, char **argv) {
     if (!parse_opts(&argc, &argv, &events, &monitor, &quiet, &timeout,
                     &recursive, &csv, &dodaemon, &syslog, &no_dereference,
                     &format, &timefmt, &fromfile, &outfile, &exc_regex,
-                    &exc_iregex, &inc_regex, &inc_iregex, &no_newline)) {
+                    &exc_iregex, &inc_regex, &inc_iregex, &no_newline,
+                    &global)) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_initialize()) {
+    if (!inotifytools_init(global)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -196,6 +199,9 @@ int main(int argc, char **argv) {
     }
     if (no_dereference) {
         events = events | IN_DONT_FOLLOW;
+    }
+    if (global) {
+        events |= IN_ISDIR;
     }
 
     FileList list = construct_path_list(argc, argv, fromfile);
@@ -291,7 +297,9 @@ int main(int argc, char **argv) {
     }
 
     if (!quiet) {
-        if (recursive) {
+        if (global) {
+            output_error(syslog, "Setting up global filesystem watches.\n");
+        } else if (recursive) {
             output_error(syslog, "Setting up watches.  Beware: since -r "
                                  "was given, this may take a while!\n");
         } else {
@@ -302,6 +310,16 @@ int main(int argc, char **argv) {
     // now watch files
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
+        if (global) {
+            if (!inotifytools_watch_files(list.watch_files, events)) {
+                output_error(syslog,
+                             "Couldn't add global watch(es) %s...: %s\n",
+                             this_file, strerror(inotifytools_error()));
+                return EXIT_FAILURE;
+            }
+            break;
+        }
+
         if ((recursive &&
              !inotifytools_watch_recursively_with_exclude(
                  this_file, events, list.exclude_files)) ||
@@ -341,6 +359,10 @@ int main(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
         }
+
+        // TODO: index files from unknown watches
+        if (global)
+            continue;
 
         if (quiet < 2 && (event->mask & orig_events)) {
             if (csv) {
@@ -422,13 +444,15 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 bool *syslog, bool *no_dereference, char **format,
                 char **timefmt, char **fromfile, char **outfile,
                 char **exc_regex, char **exc_iregex, char **inc_regex,
-                char **inc_iregex, bool *no_newline) {
+                char **inc_iregex, bool *no_newline, bool *global) {
     assert(argc);
     assert(argv);
     assert(events);
     assert(monitor);
     assert(quiet);
     assert(timeout);
+    assert(recursive);
+    assert(global);
     assert(csv);
     assert(daemon);
     assert(syslog);
@@ -458,7 +482,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
     static char *customformat = NULL;
 
     // Short options
-    static const char opt_string[] = "mrhcdsPqt:fo:e:";
+    static const char opt_string[] = "mrghcdsPqt:fo:e:";
 
     // Long options
     static const struct option long_opts[] = {
@@ -469,6 +493,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         {"timeout", required_argument, NULL, 't'},
         {"filename", no_argument, NULL, 'f'},
         {"recursive", no_argument, NULL, 'r'},
+        {"global", no_argument, NULL, 'g'},
         {"csv", no_argument, NULL, 'c'},
         {"daemon", no_argument, NULL, 'd'},
         {"syslog", no_argument, NULL, 's'},
@@ -511,6 +536,11 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         // --recursive or -r
         case 'r':
             (*recursive)++;
+            break;
+
+        // --global or -g
+        case 'g':
+            (*global) = true;
             break;
 
         // --csv or -c
@@ -727,6 +757,7 @@ void print_help() {
     printf("\t-P|--no-dereference\n"
            "\t              \tDo not follow symlinks.\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t--fromfile <file>\n"
            "\t              \tRead files to watch from <file> or `-' for "
            "stdin.\n");

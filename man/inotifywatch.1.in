@@ -5,7 +5,7 @@ inotifywatch \- gather filesystem access statistics using inotify
 
 .SH SYNOPSIS
 .B inotifywatch
-.RB [ \-hvzrPqf ]
+.RB [ \-hvzrgPqf ]
 .RB [ \-e
 <event> ]
 .RB [ \-t
@@ -109,6 +109,10 @@ maximum is 8192; it can be increased by writing to
 .TP
 .B \-P, \-\-no\-dereference
 Do not follow symlinks.
+
+.TP
+.B \-g, \-\-global
+Watch entire filesystem of any directories passed as arguments using fanotify.
 
 .TP
 .B \-t <seconds>, \-\-timeout <seconds>

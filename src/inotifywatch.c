@@ -27,11 +27,13 @@ extern int optind, opterr, optopt;
 
 #define nasprintf(...) niceassert(-1 != asprintf(__VA_ARGS__), "out of memory")
 
+// clang-format off
 // METHODS
 bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
                 int *verbose, int *zero, int *sort, int *recursive,
                 int *no_dereference, char **fromfile, char **exc_regex,
-                char **exc_iregex, char **inc_regex, char **inc_iregex);
+                char **exc_iregex, char **inc_regex, char **inc_iregex,
+                bool *global);
 
 void print_help();
 
@@ -73,6 +75,7 @@ int main(int argc, char **argv) {
     int verbose = 0;
     zero = 0;
     int recursive = 0;
+    bool global = false;
     int no_dereference = 0;
     char *fromfile = 0;
     sort = -1;
@@ -87,7 +90,7 @@ int main(int argc, char **argv) {
     // Parse commandline options, aborting if something goes wrong
     if (!parse_opts(&argc, &argv, &events, &timeout, &verbose, &zero, &sort,
                     &recursive, &no_dereference, &fromfile, &exc_regex,
-                    &exc_iregex, &inc_regex, &inc_iregex)) {
+                    &exc_iregex, &inc_regex, &inc_iregex, &global)) {
         return EXIT_FAILURE;
     }
 
@@ -110,7 +113,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_initialize()) {
+    if (!inotifytools_init(global)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -121,6 +124,9 @@ int main(int argc, char **argv) {
         events = IN_ALL_EVENTS;
     if (no_dereference)
         events = events | IN_DONT_FOLLOW;
+
+    if (global)
+        events |= IN_ISDIR;
 
     FileList list = construct_path_list(argc, argv, fromfile);
 
@@ -134,6 +140,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Establishing watches...\n");
     for (int i = 0; list.watch_files[i]; ++i) {
         char const *this_file = list.watch_files[i];
+        if (global) {
+            if (!inotifytools_watch_files( list.watch_files, events )) {
+                fprintf(stderr,
+                        "Couldn't add global watch(es) %s...: %s\n",
+                        this_file, strerror(inotifytools_error()));
+                return EXIT_FAILURE;
+            }
+            break;
+        }
+
         if (recursive && verbose) {
             fprintf(stderr, "Setting up watch(es) on %s\n", this_file);
         }
@@ -200,6 +216,10 @@ int main(int argc, char **argv) {
                 continue;
             }
         }
+
+        // TODO: index files from unknown watches
+        if (global)
+            continue;
 
         // if we last had MOVED_FROM and don't currently have MOVED_TO,
         // moved_from file must have been moved outside of tree - so unwatch it.
@@ -367,7 +387,8 @@ int print_info() {
 bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
                 int *verbose, int *z, int *s, int *recursive,
                 int *no_dereference, char **fromfile, char **exc_regex,
-                char **exc_iregex, char **inc_regex, char **inc_iregex) {
+                char **exc_iregex, char **inc_regex, char **inc_iregex,
+                bool *global) {
     assert(argc);
     assert(argv);
     assert(e);
@@ -376,6 +397,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
     assert(z);
     assert(s);
     assert(recursive);
+    assert(global);
     assert(no_dereference);
     assert(fromfile);
     assert(exc_regex);
@@ -388,7 +410,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
     bool sort_set = false;
 
     // Short options
-    static const char opt_string[] = "hrPa:d:zve:t:";
+    static const char opt_string[] = "hrgPa:d:zve:t:";
 
     // Construct array
     static const struct option long_opts[] = {
@@ -400,6 +422,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
         {"ascending", required_argument, NULL, 'a'},
         {"descending", required_argument, NULL, 'd'},
         {"recursive", no_argument, NULL, 'r'},
+        {"global", no_argument, NULL, 'g'},
         {"no-dereference", no_argument, NULL, 'P'},
         {"fromfile", required_argument, NULL, 'o'},
         {"exclude", required_argument, NULL, 'c'},
@@ -431,6 +454,12 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
         case 'r':
             ++(*recursive);
             break;
+
+	// --global or -g
+        case 'g':
+            (*global) = true;
+            break;
+
         case 'P':
             ++(*no_dereference);
             break;
@@ -610,6 +639,7 @@ void print_help() {
            "\t\tif they consist only of zeros (the default is to not output\n"
            "\t\tthese rows and columns).\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t-P|--no-dereference\n"
            "\t\tDo not follow symlinks.\n");
     printf("\t-t|--timeout <seconds>\n"
