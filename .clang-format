@@ -1,2 +1,9 @@
 BasedOnStyle: chromium
-
+IndentWidth: 8
+UseTab: Always
+IndentCaseLabels: false
+PointerAlignment: Right
+AllowShortIfStatementsOnASingleLine: WithoutElse
+PenaltyBreakBeforeFirstCallParameter: 100
+PenaltyBreakAssignment: 100
+PenaltyExcessCharacter: 10
