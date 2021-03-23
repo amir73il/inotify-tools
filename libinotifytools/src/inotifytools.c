@@ -735,6 +735,80 @@ char * inotifytools_event_to_str_sep(int events, char sep)
 }
 
 /**
+ * Get the filename from fid.
+ *
+ * Resolve filename from fid + name and return
+ * static filename string.
+ */
+const char *inotifytools_filename_from_fid(struct fanotify_event_fid *fid) {
+#ifdef LINUX_FANOTIFY
+	static char filename[PATH_MAX];
+	struct fanotify_event_fid fsid = {};
+	int mount_fd = AT_FDCWD;
+
+	// Match mount_fd from fid->fsid (and null fhandle)
+	fsid.info.fsid.val[0] = fid->info.fsid.val[0];
+	fsid.info.fsid.val[1] = fid->info.fsid.val[1];
+	fsid.info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
+	fsid.info.hdr.len = sizeof(fsid);
+	watch *mnt = watch_from_fid(&fsid);
+	if (mnt) mount_fd = mnt->wd >> 1;
+
+	int dirfd = open_by_handle_at(mount_fd, &fid->handle, 0);
+	if (dirfd < 0) {
+		fprintf(stderr, "Failed to decode directory fid.\n");
+		return NULL;
+	}
+	char sym[30];
+	sprintf(sym, "/proc/self/fd/%d", dirfd);
+	int len = readlink(sym, filename, PATH_MAX);
+	if (len < 0) {
+		close(dirfd);
+		fprintf(stderr, "Failed to resolve path from directory fid.\n");
+		return NULL;
+	}
+	filename[len++] = '/';
+	filename[len] = 0;
+	if (fid->info.hdr.info_type == FAN_EVENT_INFO_TYPE_DFID_NAME) {
+		int fid_len = sizeof(*fid) + fid->handle.handle_bytes;
+		int name_len = fid->info.hdr.len - fid_len;
+		if (name_len > 0) {
+			const char *name = (const char *)fid->handle.f_handle +
+					   fid->handle.handle_bytes;
+			int deleted = faccessat(dirfd, name, F_OK,
+						AT_SYMLINK_NOFOLLOW);
+			if (deleted && errno != ENOENT) {
+				fprintf(stderr,
+					"Failed to access file %s (%s).\n",
+					name, strerror(errno));
+				close(dirfd);
+				return NULL;
+			}
+			memcpy(filename + len, name, name_len);
+			if (deleted) strcat(filename, " (deleted)");
+		}
+	}
+	close(dirfd);
+	return filename;
+#else
+	return NULL;
+#endif
+}
+
+/**
+ * Get the filename from a watch.
+ *
+ * If not stored in watch, resolve filename from fid + name and return
+ * static filename string.
+ */
+const char *inotifytools_filename_from_watch(watch *w) {
+	if (!w) return "";
+	if (!w->fid) return w->filename;
+
+	return inotifytools_filename_from_fid(w->fid) ?: "";
+}
+
+/**
  * Get the filename used to establish a watch.
  *
  * inotifytools_initialize() must be called before this function can
@@ -754,13 +828,13 @@ char * inotifytools_event_to_str_sep(int events, char sep)
  *       Finally, if a file is moved or renamed while being watched, the
  *       filename returned will still be the original name.
  */
-char * inotifytools_filename_from_wd( int wd ) {
+const char *inotifytools_filename_from_wd(int wd) {
 	niceassert( init, "inotifytools_initialize not called yet" );
+	if (!wd) return "";
 	watch *w = watch_from_wd(wd);
-	if (!w)
-        return NULL;
+	if (!w) return "";
 
-	return w->filename;
+	return inotifytools_filename_from_watch(w);
 }
 
 /**
@@ -890,10 +964,10 @@ watch *create_watch(int wd, struct fanotify_event_fid *fid, const char *filename
 	}
 	w->wd = wd ?: (unsigned long)fid;
 	w->fid = fid;
-	w->filename = strdup(filename);
+	if (filename) w->filename = strdup(filename);
 	rbsearch(w, tree_wd);
 	if (fid) rbsearch(w, tree_fid);
-	rbsearch(w, tree_filename);
+	if (filename) rbsearch(w, tree_filename);
 	return w;
 }
 
@@ -1345,62 +1419,29 @@ more_events:
 		ret = &event[MAX_EVENTS];
 		watch *w = watch_from_fid(fid);
 		if (!w) {
-			struct fanotify_event_fid *fsid;
-			int mount_fd = AT_FDCWD;
-
-			fsid = calloc(1, sizeof(*fsid));
-			if (!fsid) {
-				fprintf(stderr, "Failed to allocate fsid");
-				return NULL;
-			}
-			// Match mount_fd from fid->fsid (and null fhandle)
-			fsid->info.fsid.val[0] = fid->info.fsid.val[0];
-			fsid->info.fsid.val[1] = fid->info.fsid.val[1];
-			fsid->info.hdr.info_type = FAN_EVENT_INFO_TYPE_FID;
-			fsid->info.hdr.len = sizeof(*fsid);
-			watch *mnt = watch_from_fid(fsid);
-			if (mnt) mount_fd = mnt->wd >> 1;
-
-			int fd = open_by_handle_at(mount_fd, &fid->handle,
-						   O_PATH);
-			if (fd < 0) {
-				fprintf(stderr, "Failed to decode fid.\n");
-				longjmp(jmp, 0);
-			}
-			char sym[30];
-			sprintf(sym, "/proc/self/fd/%d", fd);
-			char filename[PATH_MAX];
-			int len = readlink(sym, filename, PATH_MAX);
-			close(fd);
-			if (len < 0) {
-				fprintf(stderr,
-					"Failed to resolve path from fid.\n");
-				longjmp(jmp, 0);
-			}
-			filename[len++] = '/';
-			if (name_len > 0) {
-				memcpy(filename + len, name, name_len);
-				len += name_len;
-			}
-			filename[len] = 0;
 			newfid = calloc(1, info->hdr.len);
 			if (!newfid) {
 				fprintf(stderr, "Failed to allocate fid.\n");
 				return NULL;
 			}
 			memcpy(newfid, fid, info->hdr.len);
-			w = create_watch(0, newfid, filename);
-			if (!w) return NULL;
+			const char *filename = inotifytools_filename_from_fid(fid);
+			if (filename) {
+				w = create_watch(0, newfid, filename);
+				if (!w) return NULL;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored \
     "-Wstrict-aliasing"	 // Fix false postive compile error on Ubuntu 16.04
-			printf("...watching (fid=%x.%x.%lx;name='%s')\n",
-			       fid->info.fsid.val[0], fid->info.fsid.val[1],
-			       *(unsigned long *)fid->handle.f_handle, name);
+				printf("[fid=%x.%x.%lx;name='%s'] %s\n",
+				       fid->info.fsid.val[0],
+				       fid->info.fsid.val[1],
+				       *(unsigned long *)fid->handle.f_handle,
+				       name, filename);
 #pragma GCC diagnostic pop
+			}
 		}
-		ret->wd = w->wd;
+		ret->wd = w ? w->wd : 0;
 		ret->mask = (uint32_t)meta->mask;
 		ret->len = name_len;
 		if (name_len > 0) memcpy(ret->name, name, name_len);
@@ -1834,7 +1875,8 @@ int inotifytools_sprintf( struct nstring * out, struct inotify_event* event, cha
  */
 int inotifytools_snprintf( struct nstring * out, int size,
                            struct inotify_event* event, char* fmt ) {
-	static char * filename, * eventname, * eventstr;
+	static const char *filename;
+	static char *eventname, *eventstr;
 	static unsigned int i, ind;
 	static char ch1;
 	static char timestr[MAX_STRLEN];
