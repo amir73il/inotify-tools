@@ -310,7 +310,8 @@ int inotifytools_init(int fanotify) {
 		fanotify_mode = 1;
 		fanotify_mark_type = (fanotify > 0) ? FAN_MARK_FILESYSTEM
 						    : FAN_MARK_INODE;
-		inotify_fd = fanotify_init(FAN_REPORT_FID, 0);
+		inotify_fd = fanotify_init(FAN_REPORT_FID | FAN_REPORT_DFID_NAME,
+					   0);
 #endif
 	} else {
 		inotify_fd = inotify_init();
@@ -1104,7 +1105,8 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			 */
 			wd = fanotify_mark(inotify_fd,
 					   FAN_MARK_ADD | fanotify_mark_type,
-					   events, AT_FDCWD, filenames[i]);
+					   events | FAN_EVENT_ON_CHILD,
+					   AT_FDCWD, filenames[i]);
 #endif
 		} else {
 			wd = inotify_add_watch(inotify_fd, filenames[i], events);
