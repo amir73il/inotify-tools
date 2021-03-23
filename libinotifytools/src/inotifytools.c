@@ -1293,16 +1293,38 @@ more_events:
 	if (fanotify_mode) {
 		struct fanotify_event_metadata *meta = (void *)ret;
 		struct fanotify_event_info_fid *info = (void *)(meta + 1);
-		struct fanotify_event_fid *fid, *newfid;
+		struct fanotify_event_fid *newfid, *fid = NULL;
+		const char *name = "";
 		int fid_len = 0;
+		int name_len = 0;
+
+		first_byte += meta->event_len;
 
 		// printf("bytes=%ld, first_byte=%d, this_bytes=%ld, meta->len=%d\n",
 		//       bytes, first_byte, this_bytes, meta->event_len);
-		if (meta->event_len > sizeof(*meta) &&
-		    info->hdr.info_type == FAN_EVENT_INFO_TYPE_FID) {
-			fid = (void *)(((char *)info) + sizeof(info->hdr));
-			fid_len = info->hdr.len - sizeof(info->hdr);
-		} else {
+		if (meta->event_len > sizeof(*meta)) {
+			switch (info->hdr.info_type) {
+			case FAN_EVENT_INFO_TYPE_FID:
+			case FAN_EVENT_INFO_TYPE_DFID:
+			case FAN_EVENT_INFO_TYPE_DFID_NAME:
+				fid = (void *)(((char *)info) + sizeof(info->hdr));
+				fid_len = sizeof(*fid) + fid->handle.handle_bytes;
+				if (info->hdr.info_type ==
+				    FAN_EVENT_INFO_TYPE_DFID_NAME)
+					name_len = info->hdr.len - fid_len;
+				if (name_len &&
+				    !fid->handle.f_handle[fid->handle.handle_bytes])
+					name_len = 0;  // empty name??
+				if (name_len > 0) {
+					name = (const char *)fid->handle.f_handle +
+					       fid->handle.handle_bytes;
+				}
+				// printf("fid_len=%d, name_len=%d, name=%s, meta->len=%d\n",
+				//	fid_len, name_len, name, meta->event_len);
+				break;
+			}
+		}
+		if (!fid) {
 			fprintf(stderr, "No fid in fanotify event.\n");
 			return NULL;
 		}
@@ -1358,9 +1380,8 @@ more_events:
 		}
 		ret->wd = w->wd;
 		ret->mask = (uint32_t)meta->mask;
-		ret->len = 0;
-
-		first_byte += meta->event_len;
+		ret->len = name_len;
+		if (name_len > 0) memcpy(ret->name, name, name_len);
 	} else {
 		first_byte += sizeof(struct inotify_event) + ret->len;
 	}
