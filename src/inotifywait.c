@@ -39,7 +39,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 bool *syslog, bool *no_dereference, char **format,
                 char **timefmt, char **fromfile, char **outfile,
                 char **exc_regex, char **exc_iregex, char **inc_regex,
-                char **inc_iregex, bool *no_newline, bool *global);
+                char **inc_iregex, bool *no_newline, int *fanotify);
 
 void print_help();
 
@@ -136,7 +136,8 @@ int main(int argc, char **argv) {
     int quiet = 0;
     long int timeout = BLOCKING_TIMEOUT;
     int recursive = 0;
-    bool global = false;
+    int fanotify = 0;
+    bool global;
     bool csv = false;
     bool dodaemon = false;
     bool syslog = false;
@@ -157,11 +158,12 @@ int main(int argc, char **argv) {
                     &recursive, &csv, &dodaemon, &syslog, &no_dereference,
                     &format, &timefmt, &fromfile, &outfile, &exc_regex,
                     &exc_iregex, &inc_regex, &inc_iregex, &no_newline,
-                    &global)) {
+                    &fanotify)) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_init(global)) {
+    global = fanotify > 0;
+    if (!inotifytools_init(fanotify)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -200,7 +202,7 @@ int main(int argc, char **argv) {
     if (no_dereference) {
         events = events | IN_DONT_FOLLOW;
     }
-    if (global) {
+    if (fanotify) {
         events |= IN_ISDIR;
     }
 
@@ -444,7 +446,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
                 bool *syslog, bool *no_dereference, char **format,
                 char **timefmt, char **fromfile, char **outfile,
                 char **exc_regex, char **exc_iregex, char **inc_regex,
-                char **inc_iregex, bool *no_newline, bool *global) {
+                char **inc_iregex, bool *no_newline, int *fanotify) {
     assert(argc);
     assert(argv);
     assert(events);
@@ -452,7 +454,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
     assert(quiet);
     assert(timeout);
     assert(recursive);
-    assert(global);
+    assert(fanotify);
     assert(csv);
     assert(daemon);
     assert(syslog);
@@ -493,6 +495,7 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
         {"timeout", required_argument, NULL, 't'},
         {"filename", no_argument, NULL, 'f'},
         {"recursive", no_argument, NULL, 'r'},
+        {"fanotify", no_argument, NULL, 'F'},
         {"global", no_argument, NULL, 'g'},
         {"csv", no_argument, NULL, 'c'},
         {"daemon", no_argument, NULL, 'd'},
@@ -538,9 +541,14 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
             (*recursive)++;
             break;
 
+        // --fanotify or -F
+        case 'F':
+            (*fanotify) = -1;
+            break;
+
         // --global or -g
         case 'g':
-            (*global) = true;
+            (*fanotify) = 1;
             break;
 
         // --csv or -c
@@ -757,6 +765,7 @@ void print_help() {
     printf("\t-P|--no-dereference\n"
            "\t              \tDo not follow symlinks.\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-F|--fanotify\tWatch with fanotify.\n");
     printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t--fromfile <file>\n"
            "\t              \tRead files to watch from <file> or `-' for "

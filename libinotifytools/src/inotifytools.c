@@ -153,6 +153,7 @@ struct rbtree *tree_filename = 0;
 static int error = 0;
 int init = 0;
 static int fanotify_mode = 0;
+static int fanotify_mark_type __attribute__((unused)) = 0;
 static char* timefmt = 0;
 static regex_t* regex = 0;
 /* 0: --exclude[i], 1: --include[i] */
@@ -285,7 +286,8 @@ watch *watch_from_filename( char const *filename ) {
 
 /**
  * Initialise inotify.
- * With @fanotify non-zero, initialize fanotify filesystem watch.
+ * With @fanotify > 0, setup fanotify filesystem watches.
+ * With @fanotify < 0, setup fanotify inode watches.
  *
  * You must call this function before using any function which adds or removes
  * watches or attempts to access any information about watches.
@@ -301,6 +303,8 @@ int inotifytools_init(int fanotify) {
 	if (fanotify) {
 #ifdef LINUX_FANOTIFY
 		fanotify_mode = 1;
+		fanotify_mark_type = (fanotify > 0) ? FAN_MARK_FILESYSTEM
+						    : FAN_MARK_INODE;
 		inotify_fd = fanotify_init(FAN_REPORT_FID, 0);
 #endif
 	} else {
@@ -984,7 +988,7 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 			 * already set.
 			 */
 			wd = fanotify_mark(inotify_fd,
-					   FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+					   FAN_MARK_ADD | fanotify_mark_type,
 					   events, AT_FDCWD, filenames[i]);
 #endif
 		} else {

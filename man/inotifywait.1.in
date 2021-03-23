@@ -5,7 +5,7 @@ inotifywait \- wait for changes to files using inotify
 
 .SH SYNOPSIS
 .B inotifywait
-.RB [ \-hcmrgPq ]
+.RB [ \-hcmrFgPq ]
 .RB [ \-e
 <event> ]
 .RB [ \-t
@@ -106,6 +106,10 @@ inotify watch will be established per subdirectory, it is possible that the
 maximum amount of inotify watches per user will be reached.  The default
 maximum is 8192; it can be increased by writing to
 .BR /proc/sys/fs/inotify/max_user_watches .
+
+.TP
+.B \-F, \-\-fanotify
+Watch using fanotify.
 
 .TP
 .B \-g, \-\-global

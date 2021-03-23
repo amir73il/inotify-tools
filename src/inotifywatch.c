@@ -33,7 +33,7 @@ bool parse_opts(int *argc, char ***argv, int *events, long int *timeout,
                 int *verbose, int *zero, int *sort, int *recursive,
                 int *no_dereference, char **fromfile, char **exc_regex,
                 char **exc_iregex, char **inc_regex, char **inc_iregex,
-                bool *global);
+                int *fanotify);
 
 void print_help();
 
@@ -75,7 +75,8 @@ int main(int argc, char **argv) {
     int verbose = 0;
     zero = 0;
     int recursive = 0;
-    bool global = false;
+    int fanotify = 0;
+    bool global;
     int no_dereference = 0;
     char *fromfile = 0;
     sort = -1;
@@ -90,7 +91,7 @@ int main(int argc, char **argv) {
     // Parse commandline options, aborting if something goes wrong
     if (!parse_opts(&argc, &argv, &events, &timeout, &verbose, &zero, &sort,
                     &recursive, &no_dereference, &fromfile, &exc_regex,
-                    &exc_iregex, &inc_regex, &inc_iregex, &global)) {
+                    &exc_iregex, &inc_regex, &inc_iregex, &fanotify)) {
         return EXIT_FAILURE;
     }
 
@@ -113,7 +114,8 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    if (!inotifytools_init(global)) {
+    global = fanotify > 0;
+    if (!inotifytools_init(fanotify)) {
         warn_inotify_init_error();
         return EXIT_FAILURE;
     }
@@ -125,7 +127,7 @@ int main(int argc, char **argv) {
     if (no_dereference)
         events = events | IN_DONT_FOLLOW;
 
-    if (global)
+    if (fanotify)
         events |= IN_ISDIR;
 
     FileList list = construct_path_list(argc, argv, fromfile);
@@ -388,7 +390,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
                 int *verbose, int *z, int *s, int *recursive,
                 int *no_dereference, char **fromfile, char **exc_regex,
                 char **exc_iregex, char **inc_regex, char **inc_iregex,
-                bool *global) {
+                int *fanotify) {
     assert(argc);
     assert(argv);
     assert(e);
@@ -397,7 +399,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
     assert(z);
     assert(s);
     assert(recursive);
-    assert(global);
+    assert(fanotify);
     assert(no_dereference);
     assert(fromfile);
     assert(exc_regex);
@@ -410,7 +412,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
     bool sort_set = false;
 
     // Short options
-    static const char opt_string[] = "hrgPa:d:zve:t:";
+    static const char opt_string[] = "hrFgPa:d:zve:t:";
 
     // Construct array
     static const struct option long_opts[] = {
@@ -422,6 +424,7 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
         {"ascending", required_argument, NULL, 'a'},
         {"descending", required_argument, NULL, 'd'},
         {"recursive", no_argument, NULL, 'r'},
+        {"fanotify", no_argument, NULL, 'F'},
         {"global", no_argument, NULL, 'g'},
         {"no-dereference", no_argument, NULL, 'P'},
         {"fromfile", required_argument, NULL, 'o'},
@@ -455,9 +458,14 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
             ++(*recursive);
             break;
 
+	// --fanotify or -F
+        case 'F':
+            (*fanotify) = -1;
+            break;
+
 	// --global or -g
         case 'g':
-            (*global) = true;
+            (*fanotify) = 1;
             break;
 
         case 'P':
@@ -639,6 +647,7 @@ void print_help() {
            "\t\tif they consist only of zeros (the default is to not output\n"
            "\t\tthese rows and columns).\n");
     printf("\t-r|--recursive\tWatch directories recursively.\n");
+    printf("\t-F|--fanotify\tWatch with fanotify.\n");
     printf("\t-g|--global\tWatch entire filesystem with fanotify.\n");
     printf("\t-P|--no-dereference\n"
            "\t\tDo not follow symlinks.\n");
