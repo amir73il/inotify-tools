@@ -412,12 +412,13 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
     bool sort_set = false;
 
     // Short options
-    static const char opt_string[] = "hrFgPa:d:zve:t:";
+    static const char opt_string[] = "hrFgPa:d:zvwe:t:";
 
     // Construct array
     static const struct option long_opts[] = {
         {"help", no_argument, NULL, 'h'},
         {"event", required_argument, NULL, 'e'},
+        {"writes", no_argument, NULL, 'w'},
         {"timeout", required_argument, NULL, 't'},
         {"verbose", no_argument, NULL, 'v'},
         {"zero", no_argument, NULL, 'z'},
@@ -426,7 +427,6 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
         {"recursive", no_argument, NULL, 'r'},
         {"fanotify", no_argument, NULL, 'F'},
         {"global", no_argument, NULL, 'g'},
-        {"no-dereference", no_argument, NULL, 'P'},
         {"fromfile", required_argument, NULL, 'o'},
         {"exclude", required_argument, NULL, 'c'},
         {"excludei", required_argument, NULL, 'b'},
@@ -511,6 +511,12 @@ bool parse_opts(int *argc, char ***argv, int *e, long int *timeout,
             if (!is_timeout_option_valid(timeout, optarg)) {
                 return false;
             }
+            break;
+
+        // --writes or -w
+        case 'w':
+            // Add all filesystem modification events to the event mask
+            (*e) = ((*e) | IN_ALL_WRITE_EVENTS);
             break;
 
         // --event or -e

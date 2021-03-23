@@ -13,6 +13,9 @@ extern "C"
 
 #include <stdio.h>
 
+#define IN_ALL_READ_EVENTS (IN_OPEN | IN_ACCESS | IN_CLOSE_NOWRITE)
+#define IN_ALL_WRITE_EVENTS (IN_ALL_EVENTS & ~IN_ALL_READ_EVENTS)
+
 #define MAX_STRLEN 4096
 
 /** @struct nstring

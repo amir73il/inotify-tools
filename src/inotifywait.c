@@ -484,12 +484,13 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
     static char *customformat = NULL;
 
     // Short options
-    static const char opt_string[] = "mrghcdsPqt:fo:e:";
+    static const char opt_string[] = "mrghcdsPqt:fo:we:";
 
     // Long options
     static const struct option long_opts[] = {
         {"help", no_argument, NULL, 'h'},
         {"event", required_argument, NULL, 'e'},
+        {"writes", no_argument, NULL, 'w'},
         {"monitor", no_argument, NULL, 'm'},
         {"quiet", no_argument, NULL, 'q'},
         {"timeout", required_argument, NULL, 't'},
@@ -642,6 +643,12 @@ bool parse_opts(int *argc, char ***argv, int *events, bool *monitor, int *quiet,
             if (!is_timeout_option_valid(timeout, optarg)) {
                 return false;
             }
+            break;
+
+        // --writes or -w
+        case 'w':
+            // Add all filesystem modification events to the event mask
+            (*events) = ((*events) | IN_ALL_WRITE_EVENTS);
             break;
 
         // --event or -e
