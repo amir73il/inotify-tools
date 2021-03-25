@@ -292,7 +292,7 @@ watch *watch_from_filename( char const *filename ) {
 /**
  * Initialise inotify.
  * With @fanotify > 0, setup fanotify filesystem watches.
- * With @fanotify < 0, setup fanotify inode watches.
+ * With @fanotify < 0, setup fanotify inode and mount watches.
  *
  * You must call this function before using any function which adds or removes
  * watches or attempts to access any information about watches.
@@ -309,7 +309,7 @@ int inotifytools_init(int fanotify) {
 #ifdef LINUX_FANOTIFY
 		fanotify_mode = 1;
 		fanotify_mark_type = (fanotify > 0) ? FAN_MARK_FILESYSTEM
-						    : FAN_MARK_INODE;
+						    : FAN_MARK_MOUNT;
 		inotify_fd = fanotify_init(FAN_REPORT_FID | FAN_REPORT_DFID_NAME,
 					   0);
 #endif
@@ -1127,6 +1127,18 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 		if (fanotify_mode) {
 #ifdef LINUX_FANOTIFY
 			/*
+			 * Try to setup a mount mark for FAN_CREATE events in
+			 * case we have permissions on the mount userns before
+			 * setting up recusive inode marks.
+			 */
+			if (fanotify_mark_type == FAN_MARK_MOUNT) {
+				fanotify_mark(inotify_fd,
+					      FAN_MARK_ADD | fanotify_mark_type,
+					      FAN_CREATE | FAN_ONDIR, AT_FDCWD,
+					      filenames[i]);
+				fanotify_mark_type = FAN_MARK_INODE;
+			}
+			/*
 			 * This does not change anything if filesystem mark is
 			 * already set.
 			 */
@@ -1563,6 +1575,7 @@ more_events:
  *       as to whether or not those files will be watched.
  */
 int inotifytools_watch_recursively( char const * path, int events ) {
+	printf("Adding recursive watches on directory '%s'...\n", path);
 	return inotifytools_watch_recursively_with_exclude( path, events, 0 );
 }
 
