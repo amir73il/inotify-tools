@@ -65,6 +65,7 @@ typedef struct watch {
 	unsigned hit_moved_from;
 	unsigned hit_moved_to;
 	unsigned hit_create;
+	unsigned hit_link;
 	unsigned hit_delete;
 	unsigned hit_delete_self;
 	unsigned hit_unmount;

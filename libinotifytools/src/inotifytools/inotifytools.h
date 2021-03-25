@@ -13,6 +13,10 @@ extern "C"
 
 #include <stdio.h>
 
+#ifndef FAN_LINK
+#define FAN_LINK 0x00080000 /* Inode was linked to path */
+#endif
+
 #define IN_ALL_READ_EVENTS (IN_OPEN | IN_ACCESS | IN_CLOSE_NOWRITE)
 #define IN_ALL_WRITE_EVENTS (IN_ALL_EVENTS & ~IN_ALL_READ_EVENTS)
 

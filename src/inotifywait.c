@@ -394,7 +394,7 @@ int main(int argc, char **argv) {
         }
 
         if (monitor && recursive) {
-            if ((event->mask & IN_CREATE) ||
+            if ((event->mask & (IN_CREATE | FAN_LINK)) ||
                 (!moved_from && (event->mask & IN_MOVED_TO))) {
                 // New file - if it is a directory, watch it
                 static char *new_file;

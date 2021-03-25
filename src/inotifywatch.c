@@ -240,7 +240,7 @@ int main(int argc, char **argv) {
         }
 
         if (recursive) {
-            if ((event->mask & IN_CREATE) ||
+            if ((event->mask & (IN_CREATE | FAN_LINK)) ||
                 (!moved_from && (event->mask & IN_MOVED_TO))) {
                 // New file - if it is a directory, watch it
                 static char *new_file;
@@ -320,6 +320,9 @@ int print_info() {
     if ((IN_CREATE & events) &&
         (zero || inotifytools_get_stat_total(IN_CREATE)))
         printf("create  ");
+    if ((FAN_LINK & events) &&
+        (zero || inotifytools_get_stat_total(FAN_LINK)))
+        printf("link  ");
     if ((IN_DELETE & events) &&
         (zero || inotifytools_get_stat_total(IN_DELETE)))
         printf("delete  ");
@@ -372,6 +375,9 @@ int print_info() {
         if ((IN_CREATE & events) &&
             (zero || inotifytools_get_stat_total(IN_CREATE)))
             printf("%-6u  ", w->hit_create);
+        if ((FAN_LINK & events) &&
+            (zero || inotifytools_get_stat_total(FAN_LINK)))
+            printf("%-4u  ", w->hit_link);
         if ((IN_DELETE & events) &&
             (zero || inotifytools_get_stat_total(IN_DELETE)))
             printf("%-6u  ", w->hit_delete);

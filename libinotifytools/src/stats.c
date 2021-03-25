@@ -10,6 +10,7 @@ static unsigned  num_move_self;
 static unsigned  num_moved_to;
 static unsigned  num_moved_from;
 static unsigned  num_create;
+static unsigned  num_link;
 static unsigned  num_delete;
 static unsigned  num_delete_self;
 static unsigned  num_unmount;
@@ -34,6 +35,7 @@ void empty_stats(const void *nodep,
 	w->hit_moved_from = 0;
 	w->hit_moved_to = 0;
 	w->hit_create = 0;
+	w->hit_link = 0;
 	w->hit_delete = 0;
 	w->hit_delete_self = 0;
 	w->hit_unmount = 0;
@@ -83,6 +85,10 @@ void record_stats( struct inotify_event const * event ) {
 		++w->hit_create;
 		++num_create;
 	}
+	if ( FAN_LINK & event->mask ) {
+		++w->hit_link;
+		++num_link;
+	}
 	if ( IN_DELETE & event->mask ) {
 		++w->hit_delete;
 		++num_delete;
@@ -125,6 +131,8 @@ unsigned int *stat_ptr(watch *w, int event)
 		return &w->hit_moved_to;
 	if ( IN_CREATE == event )
 		return &w->hit_create;
+	if ( FAN_LINK == event )
+		return &w->hit_link;
 	if ( IN_DELETE == event )
 		return &w->hit_delete;
 	if ( IN_DELETE_SELF == event )
@@ -196,6 +204,8 @@ int inotifytools_get_stat_total( int event ) {
 		return num_moved_to;
 	if ( IN_CREATE == event )
 		return num_create;
+	if ( FAN_LINK == event )
+		return num_link;
 	if ( IN_DELETE == event )
 		return num_delete;
 	if ( IN_DELETE_SELF == event )

@@ -96,6 +96,7 @@ struct fanotify_event_fid {
  * \li \c IN_CLOSE_WRITE -    File opened for writing was closed \a *
  * \li \c IN_CLOSE_NOWRITE -   File not opened for writing was closed \a *
  * \li \c IN_CREATE       -   File/directory created in watched directory \a *
+ * \li \c FAN_LINK        -   File/directory linked in filesystem \a *
  * \li \c IN_DELETE       -   File/directory deleted from watched directory \a *
  * \li \c IN_DELETE_SELF  -   Watched file/directory was itself deleted
  * \li \c IN_MODIFY       -   File was modified \a *
@@ -292,7 +293,7 @@ watch *watch_from_filename( char const *filename ) {
 /**
  * Initialise inotify.
  * With @fanotify > 0, setup fanotify filesystem watches.
- * With @fanotify < 0, setup fanotify inode watches.
+ * With @fanotify < 0, setup fanotify inode and mount watches.
  *
  * You must call this function before using any function which adds or removes
  * watches or attempts to access any information about watches.
@@ -309,7 +310,7 @@ int inotifytools_init(int fanotify) {
 #ifdef LINUX_FANOTIFY
 		fanotify_mode = 1;
 		fanotify_mark_type = (fanotify > 0) ? FAN_MARK_FILESYSTEM
-						    : FAN_MARK_INODE;
+						    : FAN_MARK_MOUNT;
 		inotify_fd = fanotify_init(FAN_REPORT_FID | FAN_REPORT_DFID_NAME,
 					   0);
 #endif
@@ -574,6 +575,8 @@ int onestr_to_event(char const * event)
 		ret = IN_MOVED_TO;
 	else if ( 0 == strcasecmp(event, "CREATE") )
 		ret = IN_CREATE;
+	else if ( 0 == strcasecmp(event, "LINK") )
+		ret = FAN_LINK;
 	else if ( 0 == strcasecmp(event, "DELETE") )
 		ret = IN_DELETE;
 	else if ( 0 == strcasecmp(event, "DELETE_SELF") )
@@ -690,6 +693,10 @@ char * inotifytools_event_to_str_sep(int events, char sep)
 	if ( IN_CREATE & events ) {
 		strcat( ret, chrtostr(sep) );
 		strcat( ret, "CREATE" );
+	}
+	if ( FAN_LINK & events ) {
+		strcat( ret, chrtostr(sep) );
+		strcat( ret, "LINK" );
 	}
 	if ( IN_DELETE & events ) {
 		strcat( ret, chrtostr(sep) );
@@ -1099,6 +1106,18 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 		int wd = -1;
 		if (fanotify_mode) {
 #ifdef LINUX_FANOTIFY
+			/*
+			 * Best effort - try to setup a mount mark for FAN_LINK
+			 * events if we have permissions on an idmapped mount
+			 * before setting up recusive inode marks.
+			 */
+			if (fanotify_mark_type == FAN_MARK_MOUNT) {
+				fanotify_mark(inotify_fd,
+					   FAN_MARK_ADD | fanotify_mark_type,
+					   FAN_LINK | FAN_ONDIR,
+					   AT_FDCWD, filenames[i]);
+				fanotify_mark_type = FAN_MARK_INODE;
+			}
 			/*
 			 * This does not change anything if filesystem mark is
 			 * already set.
