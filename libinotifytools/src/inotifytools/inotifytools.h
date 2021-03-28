@@ -38,7 +38,9 @@ void inotifytools_replace_filename( char const * oldname,
                                     char const * newname );
 struct inotify_event;
 char *inotifytools_dirpath_from_event(struct inotify_event *event);
-char * inotifytools_filename_from_wd( int wd );
+struct watch;
+const char *inotifytools_filename_from_watch(struct watch *w);
+const char *inotifytools_filename_from_wd(int wd);
 int inotifytools_wd_from_filename( char const * filename );
 int inotifytools_remove_watch_by_filename( char const * filename );
 int inotifytools_remove_watch_by_wd( int wd );
