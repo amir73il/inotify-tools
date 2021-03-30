@@ -43,7 +43,7 @@ static bool parse_opts(int* argc,
 		       char** inc_regex,
 		       char** inc_iregex,
 		       int* fanotify,
-		       bool* filesystem);
+		       char* scope);
 
 void print_help(const char *tool_name);
 
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
 	zero = 0;
 	int recursive = 0;
 	int fanotify = 0;
-	bool filesystem = false;
+	char scope = 0;
 	int no_dereference = 0;
 	char* fromfile = 0;
 	sort = -1;
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
 	if (!parse_opts(&argc, &argv, &events, &timeout, &verbose, &zero, &sort,
 			&recursive, &no_dereference, &fromfile, &exc_regex,
 			&exc_iregex, &inc_regex, &inc_iregex, &fanotify,
-			&filesystem)) {
+			&scope)) {
 		return EXIT_FAILURE;
 	}
 
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
 		return EXIT_FAILURE;
 	}
 
-	rc = inotifytools_init(fanotify, filesystem, verbose);
+	rc = inotifytools_init(fanotify, scope, verbose);
 	if (!rc) {
 		warn_inotify_init_error(fanotify);
 		return EXIT_FAILURE;
@@ -159,14 +159,15 @@ int main(int argc, char** argv) {
 	fprintf(stderr, "Establishing watches...\n");
 	for (int i = 0; list.watch_files_[i]; ++i) {
 		char const* this_file = list.watch_files_[i];
-		if (filesystem) {
-			fprintf(stderr, "Setting up filesystem watch on %s\n",
-				this_file);
+		if (scope) {
+			fprintf(stderr, "Setting up %s watch on %s\n",
+				scope == 'M' ? "mount" : "filesystem", this_file);
 			if (!inotifytools_watch_files(list.watch_files_,
 						      events)) {
 				fprintf(
 				    stderr,
-				    "Couldn't add filesystem watch %s: %s\n",
+				    "Couldn't add %s watch %s: %s\n",
+				    scope == 'M' ? "mount" : "filesystem",
 				    this_file, strerror(inotifytools_error()));
 				return EXIT_FAILURE;
 			}
@@ -264,7 +265,7 @@ int main(int argc, char** argv) {
 		}
 
 		// TODO: replace filename of renamed filesystem watch entries
-		if (filesystem)
+		if (scope)
 			continue;
 
 		// if we last had MOVED_FROM and don't currently have MOVED_TO,
@@ -451,7 +452,7 @@ static bool parse_opts(int* argc,
 		       char** inc_regex,
 		       char** inc_iregex,
 		       int* fanotify,
-		       bool* filesystem) {
+		       char* scope) {
 	assert(argc);
 	assert(argv);
 	assert(e);
@@ -461,7 +462,7 @@ static bool parse_opts(int* argc,
 	assert(s);
 	assert(recursive);
 	assert(fanotify);
-	assert(filesystem);
+	assert(scope);
 	assert(no_dereference);
 	assert(fromfile);
 	assert(exc_regex);
@@ -474,7 +475,7 @@ static bool parse_opts(int* argc,
 	bool sort_set = false;
 
 	// Short options
-	static const char opt_string[] = "hrPa:d:zve:t:IFS";
+	static const char opt_string[] = "hrPa:d:zve:t:IFMS";
 
 	// Construct array
 	static const struct option long_opts[] = {
@@ -489,6 +490,7 @@ static bool parse_opts(int* argc,
 	    {"inotify", no_argument, NULL, 'I'},
 	    {"fanotify", no_argument, NULL, 'F'},
 	    {"filesystem", no_argument, NULL, 'S'},
+	    {"mount", no_argument, NULL, 'M'},
 	    {"no-dereference", no_argument, NULL, 'P'},
 	    {"fromfile", required_argument, NULL, 'o'},
 	    {"exclude", required_argument, NULL, 'c'},
@@ -534,7 +536,9 @@ static bool parse_opts(int* argc,
 
 			// --filesystem or -S
 			case 'S':
-				(*filesystem) = true;
+			// --mount or -M
+			case 'M':
+				(*scope) = curr_opt;
 				(*fanotify) = 1;
 				break;
 
@@ -757,6 +761,7 @@ void print_help(const char *tool_name) {
 	printf("\t-I|--inotify\tWatch with inotify.\n");
 	printf("\t-F|--fanotify\tWatch with fanotify.\n");
 	printf("\t-S|--filesystem\tWatch entire filesystem with fanotify.\n");
+	printf("\t-M|--mount\tWatch entire mount with fanotify.\n");
 	printf(
 	    "\t-P|--no-dereference\n"
 	    "\t\tDo not follow symlinks.\n");

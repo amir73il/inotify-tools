@@ -53,7 +53,7 @@ static bool parse_opts(int* argc,
 		       char** inc_iregex,
 		       bool* no_newline,
 		       int* fanotify,
-		       bool* filesystem);
+		       char* scope);
 
 void print_help(const char *tool_name);
 
@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
 	long timeout = BLOCKING_TIMEOUT;
 	int recursive = 0;
 	int fanotify = 0;
-	bool filesystem = false;
+	char scope = 0;
 	bool csv = false;
 	bool dodaemon = false;
 	bool sysl = false;
@@ -197,11 +197,11 @@ int main(int argc, char** argv) {
 			&recursive, &csv, &dodaemon, &sysl, &no_dereference,
 			&format, &timefmt, &fromfile, &outfile, &exc_regex,
 			&exc_iregex, &inc_regex, &inc_iregex, &no_newline,
-			&fanotify, &filesystem)) {
+			&fanotify, &scope)) {
 		return EXIT_FAILURE;
 	}
 
-	rc = inotifytools_init(fanotify, filesystem, !quiet);
+	rc = inotifytools_init(fanotify, scope, !quiet);
 	if (!rc) {
 		warn_inotify_init_error(fanotify);
 		return EXIT_FAILURE;
@@ -317,8 +317,9 @@ int main(int argc, char** argv) {
 	}
 
 	if (!quiet) {
-		if (filesystem) {
-			output_error(sysl, "Setting up filesystem watches.\n");
+		if (scope) {
+			output_error(sysl, "Setting up %s watches.\n",
+				     scope == 'M' ? "mount" : "filesystem");
 		} else if (recursive) {
 			output_error(sysl,
 				     "Setting up watches.  Beware: since -r "
@@ -331,12 +332,13 @@ int main(int argc, char** argv) {
 	// now watch files
 	for (int i = 0; list.watch_files_[i]; ++i) {
 		char const* this_file = list.watch_files_[i];
-		if (filesystem) {
+		if (scope) {
 			if (!inotifytools_watch_files(list.watch_files_,
 						      events)) {
 				output_error(
 				    sysl,
-				    "Couldn't add filesystem watch %s: %s\n",
+				    "Couldn't add %s watch %s: %s\n",
+				    scope == 'M' ? "mount" : "filesystem",
 				    this_file, strerror(inotifytools_error()));
 
 				return EXIT_FAILURE;
@@ -412,7 +414,7 @@ int main(int argc, char** argv) {
 		}
 
 		// TODO: replace filename of renamed filesystem watch entries
-		if (filesystem)
+		if (scope)
 			continue;
 
 		// if we last had MOVED_FROM and don't currently have MOVED_TO,
@@ -505,7 +507,7 @@ static bool parse_opts(int* argc,
 		       char** inc_iregex,
 		       bool* no_newline,
 		       int* fanotify,
-		       bool* filesystem) {
+		       char* scope) {
 	assert(argc);
 	assert(argv);
 	assert(events);
@@ -514,7 +516,7 @@ static bool parse_opts(int* argc,
 	assert(timeout);
 	assert(recursive);
 	assert(fanotify);
-	assert(filesystem);
+	assert(scope);
 	assert(csv);
 	assert(daemon);
 	assert(syslog);
@@ -541,7 +543,7 @@ static bool parse_opts(int* argc,
 	    "only the last option will be taken into consideration.\n";
 
 	// Short options
-	static const char opt_string[] = "mrhcdsPqt:fo:e:IFS";
+	static const char opt_string[] = "mrhcdsPqt:fo:e:IFMS";
 
 	// Long options
 	static const struct option long_opts[] = {
@@ -555,6 +557,7 @@ static bool parse_opts(int* argc,
 	    {"inotify", no_argument, NULL, 'I'},
 	    {"fanotify", no_argument, NULL, 'F'},
 	    {"filesystem", no_argument, NULL, 'S'},
+	    {"mount", no_argument, NULL, 'M'},
 	    {"csv", no_argument, NULL, 'c'},
 	    {"daemon", no_argument, NULL, 'd'},
 	    {"syslog", no_argument, NULL, 's'},
@@ -610,9 +613,11 @@ static bool parse_opts(int* argc,
 				(*fanotify) = 1;
 				break;
 
+			// --mount or -M
+			case 'M':
 			// --filesystem or -S
 			case 'S':
-				(*filesystem) = true;
+				(*scope) = curr_opt;
 				(*fanotify) = 1;
 				break;
 
@@ -867,6 +872,7 @@ void print_help(const char *tool_name) {
 	printf("\t-I|--inotify\tWatch with inotify.\n");
 	printf("\t-F|--fanotify\tWatch with fanotify.\n");
 	printf("\t-S|--filesystem\tWatch entire filesystem with fanotify.\n");
+	printf("\t-M|--mount\tWatch entire mount with fanotify.\n");
 	printf(
 	    "\t--fromfile <file>\n"
 	    "\t              \tRead files to watch from <file> or `-' for "
