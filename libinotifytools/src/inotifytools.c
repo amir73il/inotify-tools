@@ -1146,6 +1146,18 @@ int inotifytools_watch_files( char const * filenames[], int events ) {
 					   FAN_MARK_ADD | fanotify_mark_type,
 					   events | FAN_EVENT_ON_CHILD,
 					   AT_FDCWD, filenames[i]);
+			if (wd < 0 && errno == EPERM &&
+			    fanotify_mark_type == FAN_MARK_FILESYSTEM) {
+				/*
+				 * Try a mount mark for idmapped mount without.
+				 * Clear event not supported with mount mark.
+				 */
+				int mask = events & ~(FAN_MOVE | FAN_ATTRIB |
+						      FAN_DELETE_SELF);
+				wd = fanotify_mark(inotify_fd,
+						   FAN_MARK_ADD | FAN_MARK_MOUNT,
+						   mask, AT_FDCWD, filenames[i]);
+			}
 #endif
 		} else {
 			wd = inotify_add_watch(inotify_fd, filenames[i], events);
