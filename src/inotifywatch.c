@@ -434,12 +434,13 @@ bool parse_opts(int* argc,
 	bool sort_set = false;
 
 	// Short options
-	static const char opt_string[] = "hrPa:d:zve:t:IFS";
+	static const char opt_string[] = "hrPa:d:zvwe:t:IFS";
 
 	// Construct array
 	static const struct option long_opts[] = {
 	    {"help", no_argument, NULL, 'h'},
 	    {"event", required_argument, NULL, 'e'},
+	    {"writes", no_argument, NULL, 'w'},
 	    {"timeout", required_argument, NULL, 't'},
 	    {"verbose", no_argument, NULL, 'v'},
 	    {"zero", no_argument, NULL, 'z'},
@@ -544,6 +545,12 @@ bool parse_opts(int* argc,
 				if (!is_timeout_option_valid(timeout, optarg)) {
 					return false;
 				}
+				break;
+
+			// --writes or -w
+			case 'w':
+				// Add all filesystem modification events to the event mask
+				(*e) = ((*e) | IN_ALL_WRITE_EVENTS);
 				break;
 
 			// --event or -e
