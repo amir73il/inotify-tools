@@ -525,12 +525,13 @@ static bool parse_opts(int* argc,
 	    "only the last option will be taken into consideration.\n";
 
 	// Short options
-	static const char opt_string[] = "mrhcdsPqt:fo:e:IFS";
+	static const char opt_string[] = "mrhcdsPqt:fo:we:IFS";
 
 	// Long options
 	static const struct option long_opts[] = {
 	    {"help", no_argument, NULL, 'h'},
 	    {"event", required_argument, NULL, 'e'},
+	    {"writes", no_argument, NULL, 'w'},
 	    {"monitor", no_argument, NULL, 'm'},
 	    {"quiet", no_argument, NULL, 'q'},
 	    {"timeout", required_argument, NULL, 't'},
@@ -706,6 +707,12 @@ static bool parse_opts(int* argc,
 					return false;
 				}
 
+				break;
+
+			// --writes or -w
+			case 'w':
+				// Add all filesystem modification events to the event mask
+				(*events) = ((*events) | IN_ALL_WRITE_EVENTS);
 				break;
 
 			// --event or -e
