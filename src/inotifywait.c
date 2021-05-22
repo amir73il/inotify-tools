@@ -373,6 +373,12 @@ int main(int argc, char **argv) {
     if (!quiet) {
         output_error(syslog, "Watches established.\n");
     }
+    if (timeout < BLOCKING_TIMEOUT) {
+        if (!quiet)
+            output_error(syslog, "Sleeping for %ld seconds...\n", -timeout);
+	sleep(-timeout);
+	timeout = -timeout;
+    }
 
     // Now wait till we get event
     struct inotify_event *event;
@@ -878,9 +884,10 @@ void print_help() {
 	    "\t              \tWhen listening for a single event, time out "
 	    "after\n"
 	    "\t              \twaiting for an event for <seconds> seconds.\n"
-	    "\t              \tIf <seconds> is negative, %s will never time "
-	    "out.\n",
-	    TOOL_NAME);
+	    "\t              \tIf <seconds> is -1, %s will never time out.\n"
+	    "\t              \tIf <seconds> is negative, %s will wait for\n"
+	    "\t              \t-<seconds> before reading events, then listen\n"
+	    "\t              \tfor -<seconds>.\n", TOOL_NAME, TOOL_NAME);
 	printf(
 	    "\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
 	    "\t\tListen for specific event(s).  If omitted, all events are \n"
