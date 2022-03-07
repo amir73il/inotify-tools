@@ -30,7 +30,7 @@ extern int optind, opterr, optopt;
 static bool parse_opts(int* argc,
 		       char*** argv,
 		       int* events,
-		       unsigned int* timeout,
+		       int* timeout,
 		       int* verbose,
 		       int* zero,
 		       int* sort,
@@ -80,7 +80,7 @@ int zero;
 
 int main(int argc, char **argv) {
     events = 0;
-    unsigned int timeout = BLOCKING_TIMEOUT;
+    int timeout = BLOCKING_TIMEOUT;
     int verbose = 0;
     zero = 0;
     int recursive = 0;
@@ -151,7 +151,7 @@ int main(int argc, char **argv) {
 
     unsigned int num_watches = 0;
     unsigned int status;
-    fprintf(stderr, "Establishing watches...\n");
+    fprintf(stdout, "Establishing watches...\n");
     for (int i = 0; list.watch_files[i]; ++i) {
 	    char const* this_file = list.watch_files[i];
 	    if (filesystem) {
@@ -199,21 +199,25 @@ int main(int argc, char **argv) {
 		    goto failure;
 	    }
 	    if (recursive && verbose) {
-		    fprintf(stderr, "OK, %s is now being watched.\n",
+		    fprintf(stdout, "OK, %s is now being watched.\n",
 			    this_file);
 	    }
     }
     num_watches = inotifytools_get_num_watches();
 
     if (verbose) {
-	    fprintf(stderr, "Total of %u watches.\n", num_watches);
+        fprintf(stdout, "Total of %d watches.\n", num_watches);
     }
-    fprintf(stderr,
+    fprintf(stdout,
             "Finished establishing watches, now collecting statistics.\n");
 
+    if (timeout < BLOCKING_TIMEOUT) {
+        fprintf(stdout, "Sleeping for %d seconds...\n", -timeout);
+	sleep(-timeout);
+	timeout = -timeout;
+    }
     if (timeout && verbose) {
-	    fprintf(stderr, "Will listen for events for %u seconds.\n",
-		    timeout);
+        fprintf(stdout, "Will listen for events for %d seconds.\n", timeout);
     }
 
     signal(SIGINT, handle_signal);
@@ -421,7 +425,7 @@ int print_info() {
 static bool parse_opts(int* argc,
 		       char*** argv,
 		       int* e,
-		       unsigned int* timeout,
+		       int* timeout,
 		       int* verbose,
 		       int* z,
 		       int* s,
@@ -756,9 +760,11 @@ void print_help() {
 	printf(
 	    "\t-t|--timeout <seconds>\n"
 	    "\t\tListen only for specified amount of time in seconds; if\n"
-	    "\t\tomitted or zero, %s will execute until receiving an\n"
-	    "\t\tinterrupt signal.\n",
-	    TOOL_NAME);
+	    "\t\tomitted or negative, %s will execute until receiving an\n"
+	    "\t\tinterrupt signal.\n"
+	    "\t\tIf <seconds> is negative, %s will wait\n"
+	    "\t\t-<seconds> before reading events, then listen for\n"
+	    "\t\t-<seconds>.\n", TOOL_NAME, TOOL_NAME);
 	printf(
 	    "\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
 	    "\t\tListen for specific event(s).  If omitted, all events are \n"
