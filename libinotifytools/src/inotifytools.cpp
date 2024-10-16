@@ -845,7 +845,7 @@ static const char* inotifytools_filename_from_fid(
 	}
 
 	// Try to get path from file handle
-	dirf = open_by_handle_at(mount_fd, &fid->handle, 0);
+	dirf = open_by_handle_at(mount_fd, &fid->handle, O_DIRECTORY);
 	if (dirf > 0) {
 		// Got path by handle
 	} else if (fanotify_mark_type == FAN_MARK_FILESYSTEM) {
