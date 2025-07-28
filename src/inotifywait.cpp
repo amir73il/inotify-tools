@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -48,6 +50,7 @@ static bool parse_opts(int* argc,
 		       char** timefmt,
 		       char** fromfile,
 		       char** outfile,
+		       char** server,
 		       char** exc_regex,
 		       char** exc_iregex,
 		       char** inc_regex,
@@ -134,6 +137,12 @@ void validate_format(char* fmt) {
 	fclose(devnull);
 }
 
+static bool write_event_raw(struct inotify_event* event) {
+	size_t len = sizeof(struct inotify_event) + event->len;
+	ssize_t written = write(fileno(stdout), event, len);
+	return written == (ssize_t)len;
+}
+
 void output_event_csv(struct inotify_event* event) {
 	size_t dirnamelen = 0;
 	const char* eventname;
@@ -164,6 +173,69 @@ void output_error(bool syslog, const char* fmt, ...) {
 	va_end(va);
 }
 
+int setup_server_socket(const char* socket_path) {
+	int server_fd;
+	struct sockaddr_un addr;
+
+	// Create socket
+	server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (server_fd == -1) {
+		output_error(true, "Failed to create server socket: %s\n",
+			     strerror(errno));
+		return -1;
+	}
+
+	// Remove existing socket file if it exists
+	unlink(socket_path);
+
+	// Set up address
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	if (strlen(socket_path) >= sizeof(addr.sun_path)) {
+		output_error(true, "Socket path too long: %s\n", socket_path);
+		close(server_fd);
+		return -1;
+	}
+	strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+	// Bind socket
+	if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+		output_error(true, "Failed to bind to socket %s: %s\n",
+			     socket_path, strerror(errno));
+		close(server_fd);
+		return -1;
+	}
+
+	// Listen for connections
+	if (listen(server_fd, 1) == -1) {
+		output_error(true, "Failed to listen on socket: %s\n",
+			     strerror(errno));
+		close(server_fd);
+		return -1;
+	}
+
+	return server_fd;
+}
+
+int wait_for_client(int server_fd) {
+	int client_fd;
+	struct sockaddr_un client_addr;
+	socklen_t client_len = sizeof(client_addr);
+
+	output_error(true, "Waiting for client connection...\n");
+
+	client_fd = accept(server_fd, (struct sockaddr*)&client_addr,
+			   &client_len);
+	if (client_fd == -1) {
+		output_error(true, "Failed to accept client connection: %s\n",
+			     strerror(errno));
+		return -1;
+	}
+
+	output_error(true, "Client connected.\n");
+	return client_fd;
+}
+
 int main(int argc, char** argv) {
 	int events = 0;
 	int orig_events;
@@ -181,6 +253,7 @@ int main(int argc, char** argv) {
 	char* timefmt = NULL;
 	char* fromfile = NULL;
 	char* outfile = NULL;
+	char* server = NULL;
 	char* exc_regex = NULL;
 	char* exc_iregex = NULL;
 	char* inc_regex = NULL;
@@ -196,10 +269,19 @@ int main(int argc, char** argv) {
 	// Parse commandline options, aborting if something goes wrong
 	if (!parse_opts(&argc, &argv, &events, &monitor, &quiet, &timeout,
 			&recursive, &csv, &dodaemon, &sysl, &no_dereference,
-			&format, &timefmt, &fromfile, &outfile, &exc_regex,
-			&exc_iregex, &inc_regex, &inc_iregex, &no_newline,
-			&fanotify, &scope)) {
+			&format, &timefmt, &fromfile, &outfile, &server,
+			&exc_regex, &exc_iregex, &inc_regex, &inc_iregex,
+			&no_newline, &fanotify, &scope)) {
 		return EXIT_FAILURE;
+	}
+
+	// Handle server socket setup if --server option was provided
+	int server_fd = -1;
+	if (server) {
+		server_fd = setup_server_socket(server);
+		if (server_fd == -1) {
+			return EXIT_FAILURE;
+		}
 	}
 
 	rc = inotifytools_init(fanotify, scope, !quiet);
@@ -257,7 +339,7 @@ int main(int argc, char** argv) {
 	if (dodaemon) {
 		// Absolute path for outfile before entering the child.
 		char* logfile = (char*)calloc(PATH_MAX + 1, sizeof(char));
-		if (realpath(outfile, logfile) == NULL) {
+		if (outfile && realpath(outfile, logfile) == NULL) {
 			fprintf(stderr, "%s: %s\n", strerror(errno), outfile);
 			free(logfile);
 			return EXIT_FAILURE;
@@ -276,13 +358,16 @@ int main(int argc, char** argv) {
 			close(fd);
 		}
 
-		// Redirect stdout to a file
-		fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
+		// Redirect stdout to a file/socket
+		if (server) {
+			fd = wait_for_client(server_fd);
+		} else {
+			fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
+		}
 		if (fd < 0) {
 			fprintf(stderr, "Failed to open output file %s\n",
 				logfile);
 			free(logfile);
-
 			return EXIT_FAILURE;
 		}
 		free(logfile);
@@ -406,31 +491,23 @@ int main(int argc, char** argv) {
 		}
 
 		if (quiet < 2 && (event->mask & orig_events)) {
+			bool is_dir_event = (event->mask & IN_ISDIR);
 			// Only output to stdout if the event is for a file matching our filters
 			// or if we don't have any include filters
-			if (!inc_regex && !inc_iregex) {
-				// No include filter - output everything
-				if (csv) {
+			// For non-directory events, only show if they match the filter
+			// The filter is already applied by inotifytools internally
+			if ((!inc_regex && !inc_iregex) || !is_dir_event) {
+				if (server) {
+					if (!write_event_raw(event)) {
+						output_error(sysl, "Failed to write event to server: %s\n", strerror(errno));
+						return EXIT_FAILURE;
+					}
+				} else if (csv) {
 					output_event_csv(event);
 				} else if (format) {
 					inotifytools_printf(event, format);
 				} else {
 					inotifytools_printf(event, "%w %,e %f\n");
-				}
-			} else {
-				// We have an include filter
-				bool is_dir_event = (event->mask & IN_ISDIR);
-
-				// For non-directory events, only show if they match the filter
-				// The filter is already applied by inotifytools internally
-				if (!is_dir_event) {
-					if (csv) {
-						output_event_csv(event);
-					} else if (format) {
-						inotifytools_printf(event, format);
-					} else {
-						inotifytools_printf(event, "%w %,e %f\n");
-					}
 				}
 			}
 		}
@@ -523,6 +600,7 @@ static bool parse_opts(int* argc,
 		       char** timefmt,
 		       char** fromfile,
 		       char** outfile,
+		       char** server,
 		       char** exc_regex,
 		       char** exc_iregex,
 		       char** inc_regex,
@@ -547,6 +625,7 @@ static bool parse_opts(int* argc,
 	assert(timefmt);
 	assert(fromfile);
 	assert(outfile);
+	assert(server);
 	assert(exc_regex);
 	assert(exc_iregex);
 	assert(inc_regex);
@@ -565,7 +644,7 @@ static bool parse_opts(int* argc,
 	    "only the last option will be taken into consideration.\n";
 
 	// Short options
-	static const char opt_string[] = "mrhcdsPqt:fo:e:IFMS";
+	static const char opt_string[] = "mrhcdsPqt:fo:e:IFMSU:";
 
 	// Long options
 	static const struct option long_opts[] = {
@@ -593,6 +672,7 @@ static bool parse_opts(int* argc,
 	    {"excludei", required_argument, NULL, 'b'},
 	    {"include", required_argument, NULL, 'j'},
 	    {"includei", required_argument, NULL, 'k'},
+	    {"server", required_argument, NULL, 'U'},
 	    {NULL, 0, 0, 0},
 	};
 
@@ -661,6 +741,16 @@ static bool parse_opts(int* argc,
 				(*csv) = true;
 				break;
 
+			// --server or -U
+			case 'U':
+				if (*server) {
+					fprintf(stderr,
+						"Multiple --server options "
+						"given.\n");
+					return false;
+				}
+				(*server) = optarg;
+				// fall through
 			// --daemon or -d
 			case 'd':
 				(*daemon) = true;
@@ -817,6 +907,11 @@ static bool parse_opts(int* argc,
 		return false;
 	}
 
+	if (*server && (*format || *csv || *timeout)) {
+		fprintf(stderr, "-t -c and --format cannot be used with --server.\n");
+		return false;
+	}
+
 	if (*format && *csv) {
 		fprintf(stderr, "-c and --format cannot both be specified.\n");
 		return false;
@@ -841,8 +936,8 @@ static bool parse_opts(int* argc,
 		return false;
 	}
 
-	if (*daemon && *outfile == NULL) {
-		fprintf(stderr, "-o must be specified with -d.\n");
+	if (*daemon && !*outfile && !*server) {
+		fprintf(stderr, "-o or --server must be specified with -d.\n");
 		return false;
 	}
 
@@ -944,7 +1039,13 @@ void print_help(const char *tool_name) {
 	printf(
 	    "\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
 	    "\t\tListen for specific event(s).  If omitted, all events are \n"
-	    "\t\tlistened for.\n\n");
+	    "\t\tlistened for.\n");
+	printf(
+	    "\t-U|--server <socket_path>\n"
+	    "\t\tCreate a Unix domain socket at <socket_path> and wait for\n"
+	    "\t\tclient connections before establishing watches.\n"
+	    "\t\tWhen a client connects, watches will be established and the\n"
+	    "\t\tevents will be written to the client in binary format.\n\n");
 	printf("Exit status:\n");
 	printf("\t%d  -  An event you asked to watch for was received.\n",
 	       EXIT_SUCCESS);

@@ -22,6 +22,8 @@ inotifywait, fsnotifywait \- wait for changes to files using inotify or fanotify
 <event> ]
 .RB [ \-t
 <seconds> ]
+.RB [ \-U
+<socket_path> ]
 .RB [ \-\-format
 <fmt> ]
 .RB [ \-\-timefmt
@@ -251,6 +253,14 @@ Watch entire filesystem of any directories passed as arguments using fanotify.
 .TP
 .B \-M, \-\-mount
 Watch entire mount of any directories passed as arguments using fanotify.
+
+.TP
+.B \-U <socket_path>, \-\-server <socket_path>
+Create a Unix domain socket at the specified path and wait for client
+connections before establishing watches. Implies --daemon --monitor --syslog.
+When this option is used, the program will bind to the socket, listen for
+connections. When a client conencts, watches will be established and the
+events will be written to the client.
 
 
 
