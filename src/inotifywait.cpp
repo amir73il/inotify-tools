@@ -51,6 +51,7 @@ static bool parse_opts(int* argc,
 		       char** fromfile,
 		       char** outfile,
 		       char** server,
+		       char** client,
 		       char** exc_regex,
 		       char** exc_iregex,
 		       char** inc_regex,
@@ -236,6 +237,75 @@ int wait_for_client(int server_fd) {
 	return client_fd;
 }
 
+int connect_to_server(const char* socket_path) {
+	int client_fd;
+	struct sockaddr_un addr;
+
+	// Create socket
+	client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (client_fd == -1) {
+		fprintf(stderr, "Failed to create client socket: %s\n",
+			strerror(errno));
+		return -1;
+	}
+
+	// Set up address
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	if (strlen(socket_path) >= sizeof(addr.sun_path)) {
+		fprintf(stderr, "Socket path too long: %s\n", socket_path);
+		close(client_fd);
+		return -1;
+	}
+	strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+	// Connect to server
+	if (connect(client_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+		fprintf(stderr, "Failed to connect to server %s: %s\n",
+			socket_path, strerror(errno));
+		close(client_fd);
+		return -1;
+	}
+
+	return client_fd;
+}
+
+static struct inotify_event* read_event_raw(int fd) {
+	static char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
+	struct inotify_event* e = (struct inotify_event*)buffer;
+	ssize_t bytes_read;
+
+	// Read the fixed part of the event
+	bytes_read = read(fd, e, sizeof(struct inotify_event));
+	if (bytes_read != sizeof(struct inotify_event)) {
+		if (bytes_read == 0) {
+			output_error(true, "Server closed connection\n");
+		} else if (bytes_read == -1) {
+			fprintf(stderr, "Failed to read event: %s\n",
+				strerror(errno));
+		} else {
+			fprintf(stderr, "Partial event read\n");
+		}
+		return NULL;
+	}
+
+	// Read the variable part (filename) if present
+	if (e->len > 0) {
+		if (e->len > NAME_MAX + 1) {
+			fprintf(stderr, "Event name too long: %u\n", e->len);
+			return NULL;
+		}
+		bytes_read = read(fd, e->name, e->len);
+		if (bytes_read != (ssize_t)e->len) {
+			fprintf(stderr, "Failed to read event name: %s\n",
+				strerror(errno));
+			return NULL;
+		}
+	}
+
+	return e;
+}
+
 int main(int argc, char** argv) {
 	int events = 0;
 	int orig_events;
@@ -254,6 +324,7 @@ int main(int argc, char** argv) {
 	char* fromfile = NULL;
 	char* outfile = NULL;
 	char* server = NULL;
+	char* client = NULL;
 	char* exc_regex = NULL;
 	char* exc_iregex = NULL;
 	char* inc_regex = NULL;
@@ -270,8 +341,8 @@ int main(int argc, char** argv) {
 	if (!parse_opts(&argc, &argv, &events, &monitor, &quiet, &timeout,
 			&recursive, &csv, &dodaemon, &sysl, &no_dereference,
 			&format, &timefmt, &fromfile, &outfile, &server,
-			&exc_regex, &exc_iregex, &inc_regex, &inc_iregex,
-			&no_newline, &fanotify, &scope)) {
+			&client, &exc_regex, &exc_iregex, &inc_regex,
+			&inc_iregex, &no_newline, &fanotify, &scope)) {
 		return EXIT_FAILURE;
 	}
 
@@ -279,6 +350,12 @@ int main(int argc, char** argv) {
 	int server_fd = -1;
 	if (server) {
 		server_fd = setup_server_socket(server);
+		if (server_fd == -1) {
+			return EXIT_FAILURE;
+		}
+	} else if (client) {
+		// Connect to server
+		server_fd = connect_to_server(client);
 		if (server_fd == -1) {
 			return EXIT_FAILURE;
 		}
@@ -329,7 +406,7 @@ int main(int argc, char** argv) {
 	FileList list(argc, argv);
 	construct_path_list(argc, argv, fromfile, &list);
 
-	if (0 == list.watch_files_[0]) {
+	if (!client && 0 == list.watch_files_[0]) {
 		fprintf(stderr, "No files specified to watch!\n");
 
 		return EXIT_FAILURE;
@@ -403,7 +480,7 @@ int main(int argc, char** argv) {
 			LOG_DAEMON);
 	}
 
-	if (!quiet) {
+	if (!quiet && !client) {
 		if (scope) {
 			output_error(sysl, "Setting up %s watches.\n",
 				     scope == 'M' ? "mount" : "filesystem");
@@ -417,7 +494,7 @@ int main(int argc, char** argv) {
 	}
 
 	// now watch files
-	for (int i = 0; list.watch_files_[i]; ++i) {
+	for (int i = 0; list.watch_files_[i] && !client; ++i) {
 		char const* this_file = list.watch_files_[i];
 		if (scope) {
 			if (!inotifytools_watch_files(list.watch_files_,
@@ -464,7 +541,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	if (!quiet) {
+	if (!quiet && !client) {
 		output_error(sysl, "Watches established.\n");
 	}
 	if (timeout < 0) {
@@ -478,7 +555,11 @@ int main(int argc, char** argv) {
 	char* moved_from = 0;
 
 	do {
-		event = inotifytools_next_event(timeout);
+		if (client) {
+			event = read_event_raw(server_fd);
+		} else {
+			event = inotifytools_next_event(timeout);
+		}
 		if (!event) {
 			if (!inotifytools_error()) {
 				return EXIT_TIMEOUT;
@@ -513,7 +594,7 @@ int main(int argc, char** argv) {
 		}
 
 		// TODO: replace filename of renamed filesystem watch entries
-		if (scope)
+		if (scope || client)
 			continue;
 
 		// if we last had MOVED_FROM and don't currently have MOVED_TO,
@@ -601,6 +682,7 @@ static bool parse_opts(int* argc,
 		       char** fromfile,
 		       char** outfile,
 		       char** server,
+		       char** client,
 		       char** exc_regex,
 		       char** exc_iregex,
 		       char** inc_regex,
@@ -626,6 +708,7 @@ static bool parse_opts(int* argc,
 	assert(fromfile);
 	assert(outfile);
 	assert(server);
+	assert(client);
 	assert(exc_regex);
 	assert(exc_iregex);
 	assert(inc_regex);
@@ -644,7 +727,7 @@ static bool parse_opts(int* argc,
 	    "only the last option will be taken into consideration.\n";
 
 	// Short options
-	static const char opt_string[] = "mrhcdsPqt:fo:e:IFMSU:";
+	static const char opt_string[] = "mrhcdsPqt:fo:e:IFMSU:u:";
 
 	// Long options
 	static const struct option long_opts[] = {
@@ -673,6 +756,7 @@ static bool parse_opts(int* argc,
 	    {"include", required_argument, NULL, 'j'},
 	    {"includei", required_argument, NULL, 'k'},
 	    {"server", required_argument, NULL, 'U'},
+	    {"client", required_argument, NULL, 'u'},
 	    {NULL, 0, 0, 0},
 	};
 
@@ -756,6 +840,18 @@ static bool parse_opts(int* argc,
 				(*daemon) = true;
 				(*monitor) = true;
 				(*syslog) = true;
+				break;
+
+			// --client or -u
+			case 'u':
+				if (*client) {
+					fprintf(stderr,
+						"Multiple --client options "
+						"given.\n");
+					return false;
+				}
+				(*client) = optarg;
+				(*fanotify) = 1;
 				break;
 
 			// --syslog or -s
@@ -941,6 +1037,11 @@ static bool parse_opts(int* argc,
 		return false;
 	}
 
+	if (*client && *server) {
+		fprintf(stderr, "--client and --server cannot both be specified.\n");
+		return false;
+	}
+
 	if (exclude_count > 1) {
 		fprintf(stderr, "--exclude: %s", regex_warning);
 	}
@@ -1040,6 +1141,10 @@ void print_help(const char *tool_name) {
 	    "\t-e|--event <event1> [ -e|--event <event2> ... ]\n"
 	    "\t\tListen for specific event(s).  If omitted, all events are \n"
 	    "\t\tlistened for.\n");
+	printf(
+	    "\t-u|--client <socket_path>\n"
+	    "\t\tConnect to a server socket at <socket_path> and receive\n"
+	    "\t\tevents from the server.\n");
 	printf(
 	    "\t-U|--server <socket_path>\n"
 	    "\t\tCreate a Unix domain socket at <socket_path> and wait for\n"

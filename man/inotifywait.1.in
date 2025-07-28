@@ -22,6 +22,8 @@ inotifywait, fsnotifywait \- wait for changes to files using inotify or fanotify
 <event> ]
 .RB [ \-t
 <seconds> ]
+.RB [ \-u
+<socket_path> ]
 .RB [ \-U
 <socket_path> ]
 .RB [ \-\-format
@@ -253,6 +255,11 @@ Watch entire filesystem of any directories passed as arguments using fanotify.
 .TP
 .B \-M, \-\-mount
 Watch entire mount of any directories passed as arguments using fanotify.
+
+.TP
+.B \-u <socket_path>, \-\-client <socket_path>
+Connect to a server socket at the specified path and receive events from
+the server.
 
 .TP
 .B \-U <socket_path>, \-\-server <socket_path>
