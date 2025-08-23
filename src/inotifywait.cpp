@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -174,6 +175,33 @@ void output_error(bool syslog, const char* fmt, ...) {
 	va_end(va);
 }
 
+static void sigchld_handler(int sig) {
+	(void)sig;
+	// Reap all available child processes
+	while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+// Global variables for cleanup
+static int server_socket_fd = -1;
+static char* server_socket_path = NULL;
+
+static void cleanup_server() {
+	if (server_socket_fd != -1) {
+		close(server_socket_fd);
+		server_socket_fd = -1;
+	}
+	if (server_socket_path) {
+		unlink(server_socket_path);
+		server_socket_path = NULL;
+	}
+}
+
+static void server_signal_handler(int sig) {
+	(void)sig;
+	cleanup_server();
+	exit(EXIT_SUCCESS);
+}
+
 int setup_server_socket(const char* socket_path) {
 	int server_fd;
 	struct sockaddr_un addr;
@@ -218,15 +246,10 @@ int setup_server_socket(const char* socket_path) {
 	return server_fd;
 }
 
-int wait_for_client_and_send_fd(int server_fd, int inotify_fd, char scope) {
+static int accept_client(int server_fd) {
 	int client_fd;
 	struct sockaddr_un client_addr;
 	socklen_t client_len = sizeof(client_addr);
-	struct msghdr msg;
-	struct cmsghdr *cmsg;
-	struct iovec iov;
-	char buf[1];
-	char cmsgbuf[CMSG_SPACE(sizeof(int))];
 
 	output_error(true, "Waiting for client connection...\n");
 
@@ -238,7 +261,64 @@ int wait_for_client_and_send_fd(int server_fd, int inotify_fd, char scope) {
 		return -1;
 	}
 
-	output_error(true, "Client connected, sending fanotify fd and scope...\n");
+	output_error(true, "Client connected, forking...\n");
+
+	// Fork to handle this client
+	pid_t pid = fork();
+	if (pid == -1) {
+		output_error(true, "Failed to fork for client: %s\n", strerror(errno));
+		close(client_fd);
+		return -1;
+	} else if (pid == 0) {
+		// Child process: close server socket, return client_fd for further processing
+		close(server_fd);
+		return client_fd;
+	} else {
+		// Parent process: close client socket and return success
+		close(client_fd);
+		return 0;  // Success, continue accepting more clients
+	}
+}
+
+static int wait_for_clients(int server_fd, char* socket_path) {
+	// Set up global variables for cleanup
+	server_socket_fd = server_fd;
+	server_socket_path = socket_path;
+
+	// Set up signal handlers
+	signal(SIGCHLD, sigchld_handler);
+	signal(SIGINT, server_signal_handler);
+	signal(SIGTERM, server_signal_handler);
+
+	while (1) {
+		int client_fd = accept_client(server_fd);
+		if (client_fd == -1) {
+			// Check if this is a transient error we can retry
+			if (errno == EINTR || errno == ECONNABORTED) {
+				// Transient errors - continue accepting
+				continue;
+			}
+			// All other errors are fatal - shutdown server
+			output_error(true, "Fatal server error, shutting down: %s\n",
+				    strerror(errno));
+			return -1;
+		} else if (client_fd == 0) {
+			continue;  // Parent process, continue accepting more clients
+		} else {
+			// Child process, return client_fd to main
+			return client_fd;
+		}
+	}
+}
+
+static int send_fd_to_client(int client_fd, int inotify_fd, char scope) {
+	struct msghdr msg;
+	struct cmsghdr *cmsg;
+	struct iovec iov;
+	char buf[1];
+	char cmsgbuf[CMSG_SPACE(sizeof(int))];
+
+	output_error(true, "Sending fanotify fd and scope to client...\n");
 
 	// Send the scope and inotify file descriptor to client
 	buf[0] = scope;  // Send scope character
@@ -266,7 +346,8 @@ int wait_for_client_and_send_fd(int server_fd, int inotify_fd, char scope) {
 	}
 
 	output_error(true, "Successfully sent fanotify fd and scope to client.\n");
-	return client_fd;
+	close(client_fd);  // Close after sending fd
+	return 0;
 }
 
 int connect_to_server_and_recv_fd(const char* socket_path, char* recv_scope) {
@@ -383,11 +464,19 @@ int main(int argc, char** argv) {
 		return EXIT_FAILURE;
 	}
 
-	// Handle server socket setup if --server option was provided
+	// Handle server/client setup
 	int server_fd = -1;
+	int client_fd = -1;
+
 	if (server) {
 		server_fd = setup_server_socket(server);
 		if (server_fd == -1) {
+			return EXIT_FAILURE;
+		}
+
+		// Wait for clients and fork for each one
+		client_fd = wait_for_clients(server_fd, server);
+		if (client_fd == -1) {
 			return EXIT_FAILURE;
 		}
 	} else if (client) {
@@ -585,14 +674,14 @@ int main(int argc, char** argv) {
 		output_error(sysl, "Watches established.\n");
 	}
 
-	// For server mode, wait for client and send the inotify fd
+	// For server mode, send fd to client after watches are established
 	if (server) {
 		int inotify_fd = inotifytools_get_fd();
-		int client_fd = wait_for_client_and_send_fd(server_fd, inotify_fd, scope);
-		if (client_fd == -1) {
+		if (send_fd_to_client(client_fd, inotify_fd, scope) == -1) {
 			return EXIT_FAILURE;
 		}
-		close(client_fd);  // Close after sending fd
+		// Server child's job is done - exit successfully
+		return EXIT_SUCCESS;
 	}
 
 	if (timeout < 0) {
