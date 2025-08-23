@@ -218,10 +218,15 @@ int setup_server_socket(const char* socket_path) {
 	return server_fd;
 }
 
-int wait_for_client(int server_fd) {
+int wait_for_client_and_send_fd(int server_fd, int inotify_fd, char scope) {
 	int client_fd;
 	struct sockaddr_un client_addr;
 	socklen_t client_len = sizeof(client_addr);
+	struct msghdr msg;
+	struct cmsghdr *cmsg;
+	struct iovec iov;
+	char buf[1];
+	char cmsgbuf[CMSG_SPACE(sizeof(int))];
 
 	output_error(true, "Waiting for client connection...\n");
 
@@ -233,13 +238,45 @@ int wait_for_client(int server_fd) {
 		return -1;
 	}
 
-	output_error(true, "Client connected.\n");
+	output_error(true, "Client connected, sending fanotify fd and scope...\n");
+
+	// Send the scope and inotify file descriptor to client
+	buf[0] = scope;  // Send scope character
+	iov.iov_base = buf;
+	iov.iov_len = 1;
+
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = cmsgbuf;
+	msg.msg_controllen = sizeof(cmsgbuf);
+
+	cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+	*((int*)CMSG_DATA(cmsg)) = inotify_fd;
+
+	if (sendmsg(client_fd, &msg, 0) == -1) {
+		output_error(true, "Failed to send inotify fd and scope: %s\n",
+			     strerror(errno));
+		close(client_fd);
+		return -1;
+	}
+
+	output_error(true, "Successfully sent fanotify fd and scope to client.\n");
 	return client_fd;
 }
 
-int connect_to_server(const char* socket_path) {
-	int client_fd;
+int connect_to_server_and_recv_fd(const char* socket_path, char* recv_scope) {
+	int client_fd, inotify_fd;
 	struct sockaddr_un addr;
+	struct msghdr msg;
+	struct cmsghdr *cmsg;
+	struct iovec iov;
+	char buf[1];
+	char cmsgbuf[CMSG_SPACE(sizeof(int))];
 
 	// Create socket
 	client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -267,44 +304,44 @@ int connect_to_server(const char* socket_path) {
 		return -1;
 	}
 
-	return client_fd;
-}
+	// Receive the scope and fanotify file descriptor from server
+	iov.iov_base = buf;
+	iov.iov_len = 1;
 
-static struct inotify_event* read_event_raw(int fd) {
-	static char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
-	struct inotify_event* e = (struct inotify_event*)buffer;
-	ssize_t bytes_read;
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = cmsgbuf;
+	msg.msg_controllen = sizeof(cmsgbuf);
 
-	// Read the fixed part of the event
-	bytes_read = read(fd, e, sizeof(struct inotify_event));
-	if (bytes_read != sizeof(struct inotify_event)) {
-		if (bytes_read == 0) {
-			output_error(true, "Server closed connection\n");
-		} else if (bytes_read == -1) {
-			fprintf(stderr, "Failed to read event: %s\n",
-				strerror(errno));
-		} else {
-			fprintf(stderr, "Partial event read\n");
-		}
-		return NULL;
+	if (recvmsg(client_fd, &msg, 0) == -1) {
+		fprintf(stderr, "Failed to receive fanotify fd and scope: %s\n",
+			strerror(errno));
+		close(client_fd);
+		return -1;
 	}
 
-	// Read the variable part (filename) if present
-	if (e->len > 0) {
-		if (e->len > NAME_MAX + 1) {
-			fprintf(stderr, "Event name too long: %u\n", e->len);
-			return NULL;
-		}
-		bytes_read = read(fd, e->name, e->len);
-		if (bytes_read != (ssize_t)e->len) {
-			fprintf(stderr, "Failed to read event name: %s\n",
-				strerror(errno));
-			return NULL;
-		}
+	// Extract the scope and file descriptor
+	*recv_scope = buf[0];  // Get the scope character
+
+	cmsg = CMSG_FIRSTHDR(&msg);
+	if (cmsg == NULL || cmsg->cmsg_level != SOL_SOCKET ||
+	    cmsg->cmsg_type != SCM_RIGHTS) {
+		fprintf(stderr, "Invalid control message received\n");
+		close(client_fd);
+		return -1;
 	}
 
-	return e;
+	inotify_fd = *((int*)CMSG_DATA(cmsg));
+	close(client_fd);  // We don't need the socket connection anymore
+
+	fprintf(stderr, "Received fanotify fd %d and scope '%c' from server\n",
+		inotify_fd, *recv_scope ? *recv_scope : '0');
+	return inotify_fd;
 }
+
+
 
 int main(int argc, char** argv) {
 	int events = 0;
@@ -354,11 +391,13 @@ int main(int argc, char** argv) {
 			return EXIT_FAILURE;
 		}
 	} else if (client) {
-		// Connect to server
-		server_fd = connect_to_server(client);
+		// Connect to server and receive inotify fd and scope
+		server_fd = connect_to_server_and_recv_fd(client, &scope);
 		if (server_fd == -1) {
 			return EXIT_FAILURE;
 		}
+		// Use the received fd as fanotify param
+		fanotify = server_fd;
 	}
 
 	rc = inotifytools_init(fanotify, scope, !quiet);
@@ -437,7 +476,8 @@ int main(int argc, char** argv) {
 
 		// Redirect stdout to a file/socket
 		if (server) {
-			fd = wait_for_client(server_fd);
+			// For server mode, we don't need a logfile
+			fd = STDOUT_FILENO;
 		} else {
 			fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
 		}
@@ -544,6 +584,17 @@ int main(int argc, char** argv) {
 	if (!quiet && !client) {
 		output_error(sysl, "Watches established.\n");
 	}
+
+	// For server mode, wait for client and send the inotify fd
+	if (server) {
+		int inotify_fd = inotifytools_get_fd();
+		int client_fd = wait_for_client_and_send_fd(server_fd, inotify_fd, scope);
+		if (client_fd == -1) {
+			return EXIT_FAILURE;
+		}
+		close(client_fd);  // Close after sending fd
+	}
+
 	if (timeout < 0) {
 		// Used to test filesystem support for inotify/fanotify
 		fprintf(stderr, "Negative timeout specified - abort!\n");
@@ -555,11 +606,7 @@ int main(int argc, char** argv) {
 	char* moved_from = 0;
 
 	do {
-		if (client) {
-			event = read_event_raw(server_fd);
-		} else {
-			event = inotifytools_next_event(timeout);
-		}
+		event = inotifytools_next_event(timeout);
 		if (!event) {
 			if (!inotifytools_error()) {
 				return EXIT_TIMEOUT;
@@ -834,6 +881,8 @@ static bool parse_opts(int* argc,
 					return false;
 				}
 				(*server) = optarg;
+				// server mode implies fanotify
+				(*fanotify) = 1;
 				// fall through
 			// --daemon or -d
 			case 'd':
@@ -851,6 +900,7 @@ static bool parse_opts(int* argc,
 					return false;
 				}
 				(*client) = optarg;
+				// client mode implies fanotify
 				(*fanotify) = 1;
 				break;
 
@@ -1042,6 +1092,12 @@ static bool parse_opts(int* argc,
 		return false;
 	}
 
+	if (*client && (!*fanotify || *scope || *recursive)) {
+		fprintf(stderr, "--client conflicts with --inotify, "
+			"--filesystem, --mount, and --recursive.\n");
+		return false;
+	}
+
 	if (exclude_count > 1) {
 		fprintf(stderr, "--exclude: %s", regex_warning);
 	}
@@ -1144,13 +1200,13 @@ void print_help(const char *tool_name) {
 	printf(
 	    "\t-u|--client <socket_path>\n"
 	    "\t\tConnect to a server socket at <socket_path> and receive\n"
-	    "\t\tevents from the server.\n");
+	    "\t\tevents from the server. Conflicts with --inotify,\n"
+	    "\t\t--filesystem, --mount, --recursive and implies --fanotify.\n");
 	printf(
 	    "\t-U|--server <socket_path>\n"
 	    "\t\tCreate a Unix domain socket at <socket_path> and wait for\n"
 	    "\t\tclient connections before establishing watches.\n"
-	    "\t\tWhen a client connects, watches will be established and the\n"
-	    "\t\tevents will be written to the client in binary format.\n\n");
+	    "\t\tImplies --fanotify, --daemon, --monitor, and --syslog.\n\n");
 	printf("Exit status:\n");
 	printf("\t%d  -  An event you asked to watch for was received.\n",
 	       EXIT_SUCCESS);

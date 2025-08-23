@@ -65,6 +65,7 @@ int inotifytools_initialize();
 int inotifytools_init(int fanotify, char watch_scope, int verbose);
 void inotifytools_cleanup();
 int inotifytools_get_num_watches();
+int inotifytools_get_fd();
 
 int inotifytools_printf(struct inotify_event* event, const char* fmt);
 int inotifytools_fprintf(FILE* file,

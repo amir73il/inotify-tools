@@ -258,17 +258,18 @@ Watch entire mount of any directories passed as arguments using fanotify.
 
 .TP
 .B \-u <socket_path>, \-\-client <socket_path>
-Connect to a server socket at the specified path and receive events from
-the server.
+Connect to a server socket at the specified path and receive the fanotify
+file descriptor from the server. Implies \-\-fanotify and conflicts with
+\-\-server, \-\-inotify, \-\-filesystem, \-\-mount, and \-\-recursive.
 
 .TP
 .B \-U <socket_path>, \-\-server <socket_path>
 Create a Unix domain socket at the specified path and wait for client
-connections before establishing watches. Implies --daemon --monitor --syslog.
+connections before establishing watches. Implies \-\-fanotify, \-\-daemon,
+\-\-monitor, and \-\-syslog.
 When this option is used, the program will bind to the socket, listen for
-connections. When a client conencts, watches will be established and the
-events will be written to the client.
-
+connections. When a client connects, watches will be established and the
+fanotify file descriptor will be sent to the client.
 
 
 .SH "EXIT STATUS"

@@ -173,6 +173,10 @@ struct fanotify_event_fid {
 
 static int inotify_fd = -1;
 
+int inotifytools_get_fd() {
+	return inotify_fd;
+}
+
 static int recursive_watch = 0;
 int collect_stats = 0;
 
@@ -370,7 +374,8 @@ int inotifytools_init(int fanotify, char watch_scope, int verbose) {
 		    watch_scope ? FAN_MARK_FILESYSTEM : FAN_MARK_INODE;
 		at_handle_fid =
 		    watch_scope ? 0 : AT_HANDLE_FID;
-		inotify_fd =
+		// Special case: fanotify contains the fd to use (for client mode)
+		inotify_fd = (fanotify > 1) ? fanotify :
 		    fanotify_init(FAN_REPORT_FID | FAN_REPORT_DFID_NAME, 0);
 #endif
 	} else {
