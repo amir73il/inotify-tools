@@ -311,6 +311,29 @@ static int wait_for_clients(int server_fd, char* socket_path) {
 	}
 }
 
+static int recv_events_from_client(int client_fd) {
+	uint32_t client_events;
+
+	// Receive events mask from client
+	if (recv(client_fd, &client_events, sizeof(client_events), 0) == -1) {
+		output_error(true, "Failed to receive events mask from client: %s\n",
+			     strerror(errno));
+		close(client_fd);
+		return -1;
+	}
+
+	output_error(true, "Server received events mask from client: 0x%x\n", client_events);
+	if (client_events != 0) {
+		// Client specified events - use client's events
+		output_error(true, "Using client's events mask: 0x%x\n", client_events);
+		return (int)client_events;
+	} else {
+		// Client sent 0 - use server's default events
+		output_error(true, "Client sent 0, using server's default events\n");
+		return 0;
+	}
+}
+
 static int send_fd_to_client(int client_fd, int inotify_fd, char scope) {
 	struct msghdr msg;
 	struct cmsghdr *cmsg;
@@ -350,7 +373,7 @@ static int send_fd_to_client(int client_fd, int inotify_fd, char scope) {
 	return 0;
 }
 
-int connect_to_server_and_recv_fd(const char* socket_path, char* recv_scope) {
+int connect_to_server_and_recv_fd(const char* socket_path, char* recv_scope, int events) {
 	int client_fd, inotify_fd;
 	struct sockaddr_un addr;
 	struct msghdr msg;
@@ -381,6 +404,15 @@ int connect_to_server_and_recv_fd(const char* socket_path, char* recv_scope) {
 	if (connect(client_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
 		fprintf(stderr, "Failed to connect to server %s: %s\n",
 			socket_path, strerror(errno));
+		close(client_fd);
+		return -1;
+	}
+
+	// Send events mask to server
+	uint32_t events_mask = (uint32_t)events;
+	if (send(client_fd, &events_mask, sizeof(events_mask), 0) == -1) {
+		fprintf(stderr, "Failed to send events mask to server: %s\n",
+			strerror(errno));
 		close(client_fd);
 		return -1;
 	}
@@ -479,9 +511,18 @@ int main(int argc, char** argv) {
 		if (client_fd == -1) {
 			return EXIT_FAILURE;
 		}
+
+		// Receive events mask from client
+		int client_events = recv_events_from_client(client_fd);
+		if (client_events == -1) {
+			return EXIT_FAILURE;
+		}
+		if (client_events != 0) {
+			events = client_events;
+		}
 	} else if (client) {
 		// Connect to server and receive inotify fd and scope
-		server_fd = connect_to_server_and_recv_fd(client, &scope);
+		server_fd = connect_to_server_and_recv_fd(client, &scope, events);
 		if (server_fd == -1) {
 			return EXIT_FAILURE;
 		}
