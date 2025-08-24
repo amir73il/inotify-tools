@@ -368,7 +368,7 @@ int inotifytools_init(int fanotify, char watch_scope, int verbose) {
 	if (fanotify) {
 #ifdef LINUX_FANOTIFY
 		self_pid = getpid();
-		fanotify_mode = 1;
+		fanotify_mode = fanotify;
 		fanotify_mark_type =
 		    watch_scope == 'M' ? FAN_MARK_MOUNT :
 		    watch_scope ? FAN_MARK_FILESYSTEM : FAN_MARK_INODE;
@@ -855,7 +855,7 @@ static const char* inotifytools_filename_from_fid(
 	dirf = open_by_handle_at(mount_fd, &fid->handle, O_DIRECTORY);
 	if (dirf > 0) {
 		// Got path by handle
-	} else if (fanotify_mark_type == FAN_MARK_FILESYSTEM) {
+	} else if (fanotify_mark_type) {
 		// Suppress warnings for failure to decode fid for events
 		// inside deleted directories
 		if (errno == ESTALE)
@@ -1306,7 +1306,9 @@ int inotifytools_watch_files(char const* filenames[], int events) {
 	static int i;
 	for (i = 0; filenames[i]; ++i) {
 		int wd = -1;
-		if (fanotify_mode) {
+		if (fanotify_mode > 1) {
+			wd = 0;
+		} else if (fanotify_mode) {
 #ifdef LINUX_FANOTIFY
 			unsigned int flags = FAN_MARK_ADD | fanotify_mark_type;
 

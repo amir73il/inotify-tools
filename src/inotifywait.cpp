@@ -664,7 +664,7 @@ int main(int argc, char** argv) {
 	}
 
 	// now watch files
-	for (int i = 0; list.watch_files_[i] && !client; ++i) {
+	for (int i = 0; list.watch_files_[i]; ++i) {
 		char const* this_file = list.watch_files_[i];
 		if (scope) {
 			if (!inotifytools_watch_files(list.watch_files_,
@@ -711,7 +711,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	if (!quiet && !client) {
+	if (!quiet) {
 		output_error(sysl, "Watches established.\n");
 	}
 
