@@ -5,7 +5,10 @@
 fanotify_supported_on() {
     path=$1
     shift
-    ../../src/fsnotifywait --fanotify -t -1 "$@" "$path" 2>&1 | grep -q 'Negative timeout'
+    # "Negative timeout" means the watch works.
+    # "Operation not permitted" means fanotify is supported, but this user cannot use it.
+    ../../src/fsnotifywait --fanotify -t -1 "$@" "$path" 2>&1 |
+        grep -q -E 'Negative timeout|Operation not permitted'
 }
 
 fanotify_supported() {
